@@ -30,12 +30,14 @@ docker compose up -d --quiet-pull >/dev/null 2>&1 || docker compose up -d
 for _ in $(seq 1 50); do "$BIN" "$PORT" >/dev/null 2>&1 && break; sleep 0.2; done
 
 OUT=$("$BIN" --no-color)
-echo "$OUT" | grep -q "container demo-stack-web-1 (nginx:alpine)" || fail "table does not name the container: $OUT"
+echo "$OUT" | grep -q "container demo-stack-web-1" || fail "table does not name the container: $OUT"
 echo "$OUT" | grep "$PORT" | grep -q "demo-stack" || fail "table does not show the Compose folder: $OUT"
 pass "table shows container and Compose project"
 
 DETAIL=$("$BIN" --no-color "$PORT")
 echo "$DETAIL" | grep -q "published by Docker container demo-stack-web-1" || fail "detail view: $DETAIL"
+echo "$DETAIL" | grep -q "nginx:alpine" || fail "detail view lacks the image: $DETAIL"
+echo "$DETAIL" | grep -q "demo-stack" || fail "detail view lacks the Compose folder: $DETAIL"
 pass "detail view"
 
 "$BIN" --json "$PORT" | grep -q '"name": "demo-stack-web-1"' || fail "json lacks container"
