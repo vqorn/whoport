@@ -21,6 +21,9 @@ jobs:
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Werror"
       - name: Unit and integration tests
         run: make CC=${{ matrix.cc }} test
+      - name: Docker test
+        if: matrix.os == 'ubuntu-latest' && matrix.cc == 'gcc'
+        run: ./tests/docker.sh ./whoport
 
   windows:
     runs-on: windows-latest

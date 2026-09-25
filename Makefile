@@ -1,6 +1,6 @@
 # whoport: make, make test, sudo make install
 # Cross-compile for Windows from Linux: make CC=x86_64-w64-mingw32-gcc OS=Windows_NT
-VERSION ?= 1.0.0
+VERSION ?= 1.1.0
 PREFIX ?= /usr/local
 CC ?= cc
 CFLAGS ?= -O2
@@ -19,7 +19,7 @@ else
   SANITIZE ?= -fsanitize=address,undefined
 endif
 
-SRC = src/main.c src/util.c src/platform_posix.c src/ports_linux.c src/ports_macos.c src/ports_windows.c
+SRC = src/main.c src/util.c src/docker.c src/platform_posix.c src/ports_linux.c src/ports_macos.c src/ports_windows.c
 HDR = src/whoport.h
 BIN = whoport$(EXE)
 TEST_BIN = tests/test_util$(EXE)
@@ -27,8 +27,8 @@ TEST_BIN = tests/test_util$(EXE)
 $(BIN): $(SRC) $(HDR)
 	$(CC) $(CFLAGS) $(WARN) $(DEFS) -o $@ $(SRC) $(LDFLAGS) $(LDLIBS)
 
-$(TEST_BIN): tests/test_util.c src/util.c $(HDR)
-	$(CC) -g -O1 $(WARN) $(DEFS) $(SANITIZE) -Isrc -o $@ tests/test_util.c src/util.c $(LDLIBS)
+$(TEST_BIN): tests/test_util.c src/util.c src/docker.c src/platform_posix.c src/ports_windows.c $(HDR)
+	$(CC) -g -O1 $(WARN) $(DEFS) $(SANITIZE) -Isrc -o $@ tests/test_util.c src/util.c src/docker.c src/platform_posix.c src/ports_windows.c $(LDLIBS)
 
 test: $(BIN) $(TEST_BIN)
 	./$(TEST_BIN)
