@@ -254,6 +254,29 @@ static void test_docker(void) {
     CHECK_INT(wp_http_parse(r4, strlen(r4), &body, &blen), 204);
 }
 
+static void test_http_complete(void) {
+    /* Content-Length: complete once the body is all there. */
+    const char *cl = "HTTP/1.0 200 OK\r\nContent-Length: 4\r\n\r\n[{}]";
+    CHECK_INT(wp_http_complete(cl, strlen(cl)), 1);
+    CHECK_INT(wp_http_complete(cl, strlen(cl) - 2), 0);
+    /* No Content-Length (Docker, large response to HTTP/1.0): only the peer
+     * closing the connection ends it, so headers alone are never complete. */
+    const char *open_ended = "HTTP/1.0 200 OK\r\nApi-Version: 1.47\r\nContent-Type: application/json\r\n\r\n[{\"Id\":";
+    CHECK_INT(wp_http_complete(open_ended, strlen(open_ended)), 0);
+    const char *headers_only = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n";
+    CHECK_INT(wp_http_complete(headers_only, strlen(headers_only)), 0);
+    /* Chunked: complete at the last chunk. */
+    const char *ch = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n[]\r\n0\r\n\r\n";
+    CHECK_INT(wp_http_complete(ch, strlen(ch)), 1);
+    CHECK_INT(wp_http_complete(ch, strlen(ch) - 5), 0);
+    /* The body is still parsed from what arrived before the close. */
+    char resp[] = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n[]";
+    char *body;
+    size_t blen;
+    CHECK_INT(wp_http_parse(resp, strlen(resp), &body, &blen), 200);
+    CHECK_INT(blen, 2);
+}
+
 static void test_noise(void) {
     listener_t l;
     memset(&l, 0, sizeof l);
@@ -274,6 +297,7 @@ int main(void) {
     test_parse();
     test_dedupe();
     test_docker();
+    test_http_complete();
     test_noise();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;

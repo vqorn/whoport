@@ -59,6 +59,7 @@ int wp_docker_containers(wp_container **out, size_t *count); /* -1 when Docker i
 int wp_docker_stop(const char *name, char *err, size_t err_size);
 int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *count);
 int wp_http_parse(char *resp, size_t len, char **body, size_t *body_len);
+int wp_http_complete(const char *buf, size_t len);
 
 /* util.c */
 void wp_copy(char *dst, size_t size, const char *src);

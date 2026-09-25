@@ -324,18 +324,39 @@ int wp_http_parse(char *resp, size_t len, char **body, size_t *body_len) {
     return status;
 }
 
-/* Complete when headers are in and the body reached Content-Length (or the
- * final chunk). Lets us stop reading without waiting for the peer to close. */
+/* Whether a response can be read to the end without waiting for the peer to
+ * close: headers are in and the body reached Content-Length, or the final
+ * chunk arrived. Without either, the body ends when the connection closes
+ * (Docker leaves out Content-Length for large responses to HTTP/1.0). */
+int wp_http_complete(const char *buf, size_t len) {
+    const char *hdr_end = NULL;
+    for (size_t i = 0; i + 3 < len; i++) {
+        if (buf[i] == '\r' && buf[i + 1] == '\n' && buf[i + 2] == '\r' && buf[i + 3] == '\n') {
+            hdr_end = buf + i;
+            break;
+        }
+    }
+    if (!hdr_end) return 0;
+    size_t body = len - (size_t)(hdr_end + 4 - buf);
+    for (const char *line = buf; line < hdr_end;) {
+        const char *eol = line;
+        while (eol < hdr_end && *eol != '\r') eol++;
+        size_t n = (size_t)(eol - line);
+        if (n > 15 && strncasecmp(line, "Content-Length:", 15) == 0) return body >= (size_t)atol(line + 15);
+        if (n > 18 && strncasecmp(line, "Transfer-Encoding:", 18) == 0) {
+            for (const char *q = line + 18; q + 7 <= eol; q++)
+                if (strncasecmp(q, "chunked", 7) == 0) {
+                    /* Last chunk: "0\r\n\r\n" at the very end. */
+                    return body >= 5 && memcmp(buf + len - 5, "0\r\n\r\n", 5) == 0;
+                }
+        }
+        line = eol + 2;
+    }
+    return 0;
+}
+
 static int response_complete(char *buf, size_t len) {
-    char *body;
-    size_t body_len;
-    char *copy = malloc(len + 1);
-    if (!copy) return 1;
-    memcpy(copy, buf, len);
-    copy[len] = '\0';
-    int done = wp_http_parse(copy, len, &body, &body_len) >= 0;
-    free(copy);
-    return done;
+    return wp_http_complete(buf, len);
 }
 
 #ifdef _WIN32

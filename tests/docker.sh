@@ -18,16 +18,26 @@ cleanup() {
 trap cleanup EXIT
 
 mkdir -p "$PROJECT"
+# The second service carries enough labels to make /containers/json bigger
+# than Go's response buffer: Docker then omits Content-Length and ends the
+# body by closing the connection, as it does on machines with many containers.
+LABELS=$(for i in $(seq 1 60); do printf '      filler.%02d: "%s"\n' "$i" "$(printf 'x%.0s' $(seq 1 100))"; done)
 cat > "$PROJECT/compose.yaml" <<YAML
 services:
   web:
     image: nginx:alpine
     ports:
       - "$PORT:80"
+  big:
+    image: nginx:alpine
+    labels:
+$LABELS
 YAML
 cd "$PROJECT"
 docker compose up -d --quiet-pull >/dev/null 2>&1 || docker compose up -d
 for _ in $(seq 1 50); do "$BIN" "$PORT" >/dev/null 2>&1 && break; sleep 0.2; done
+SIZE=$(curl -s --unix-socket /var/run/docker.sock -o /dev/null -w '%{size_download}' http://docker/containers/json || echo 0)
+echo "info - /containers/json is $SIZE bytes"
 
 OUT=$("$BIN" --no-color)
 echo "$OUT" | grep -q "container demo-stack-web-1" || fail "table does not name the container: $OUT"
