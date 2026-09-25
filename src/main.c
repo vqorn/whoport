@@ -197,6 +197,18 @@ static void print_table(const listener_list *list, time_t now, int all) {
     }
     if (w_proj > 30) w_proj = 30;
     if (w_cmd > 36) w_cmd = 36;
+    /* Never wrap: shrink the two text columns to fit the terminal. A row is
+     * 41 characters plus both columns. */
+    int term = wp_term_width();
+    if (term > 0) {
+        int over = 41 + w_proj + w_cmd - (term - 1);
+        while (over > 0 && (w_proj > 16 || w_cmd > 20)) {
+            if (w_proj > 16 && (w_proj >= w_cmd || w_cmd <= 20)) w_proj--;
+            else w_cmd--;
+            over--;
+        }
+    }
+    int room_for_hint = term <= 0 || 41 + w_proj + w_cmd + 15 <= term - 1;
 
     printf("\n  %s%-6s %-*s  %-*s  %7s  %9s  %8s%s\n", DIM, "PORT", w_proj, "PROJECT", w_cmd, "COMMAND", "PID",
            "RUNNING", "MEMORY", RESET);
@@ -232,7 +244,7 @@ static void print_table(const listener_list *list, time_t now, int all) {
         printf("%s%-*s%s  ", l->container[0] ? "" : CYAN, w_proj, cell, RESET);
         fit(cmd, w_cmd, cell, sizeof cell);
         printf("%-*s  %s%7s%s  %s%9s%s  %8s", w_cmd, cell, DIM, pid, RESET, is_stale ? YELLOW : "", up, RESET, mem);
-        if (is_stale) printf("  %s<- forgotten?%s", YELLOW, RESET);
+        if (is_stale && room_for_hint) printf("  %s<- forgotten?%s", YELLOW, RESET);
         printf("\n");
     }
     printf("\n");
