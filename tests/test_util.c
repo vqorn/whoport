@@ -233,6 +233,21 @@ static void test_docker(void) {
         CHECK_STR(c[1].workdir, "");
     }
     free(c);
+    /* Docker 29 sends null for containers without published ports. */
+    const char *nulls =
+        "[{\"Id\":\"c3\",\"Names\":null,\"Image\":null,\"Ports\":null,\"Labels\":null,\"Mounts\":null},"
+        "{\"Id\":\"d4\",\"Names\":[\"/api\"],\"Image\":\"node:22\",\"Ports\":[null,{\"PublicPort\":null,\"Type\":\"tcp\"},"
+        "{\"IP\":\"::\",\"PrivatePort\":80,\"PublicPort\":8080,\"Type\":\"tcp\"}],"
+        "\"Labels\":{\"com.docker.compose.project.working_dir\":null,\"x\":\"y\"}}]";
+    CHECK_INT(wp_docker_parse(nulls, strlen(nulls), &c, &n), 0);
+    CHECK_INT(n, 1);
+    if (n == 1) {
+        CHECK_INT(c[0].port, 8080);
+        CHECK_STR(c[0].name, "api");
+        CHECK_STR(c[0].image, "node:22");
+        CHECK_STR(c[0].workdir, "");
+    }
+    free(c);
     CHECK_INT(wp_docker_parse("[]", 2, &c, &n), 0);
     CHECK_INT(n, 0);
     CHECK_INT(wp_docker_parse("[{\"Names\":[\"/x\"", 15, &c, &n), -1);

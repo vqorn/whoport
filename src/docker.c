@@ -123,6 +123,13 @@ static int js_skip(js *j, int depth) {
     return j->p > start;
 }
 
+/* Next non-space character, or 0 at the end. Used to skip values of an
+ * unexpected type (Docker 29 sends "Ports":null for containers without ports). */
+static char peek(js *j) {
+    ws(j);
+    return j->p < j->end ? *j->p : 0;
+}
+
 static int js_number(js *j, long *out) {
     ws(j);
     char *endp;
@@ -148,6 +155,8 @@ static wp_container *push_container(wp_container **list, size_t *n, size_t *cap)
     return e;
 }
 
+static size_t parse_error_at; /* for WHOPORT_DEBUG */
+
 /* Parses the /containers/json array into one entry per published TCP port. */
 int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *count) {
     js j = {json, json + len};
@@ -166,36 +175,42 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
             for (;;) {
                 char key[64];
                 if (!js_string(&j, key, sizeof key) || !expect(&j, ':')) goto fail;
-                if (!strcmp(key, "Names")) {
-                    if (!expect(&j, '[')) goto fail;
+                if (!strcmp(key, "Names") && peek(&j) == '[') {
+                    expect(&j, '[');
                     if (!expect(&j, ']')) {
                         int first = 1;
                         for (;;) {
                             char tmp[128];
-                            if (!js_string(&j, tmp, sizeof tmp)) goto fail;
-                            if (first) wp_copy(name, sizeof name, tmp[0] == '/' ? tmp + 1 : tmp);
+                            if (peek(&j) != '"') {
+                                if (!js_skip(&j, 0)) goto fail;
+                            } else {
+                                if (!js_string(&j, tmp, sizeof tmp)) goto fail;
+                                if (first) wp_copy(name, sizeof name, tmp[0] == '/' ? tmp + 1 : tmp);
+                            }
                             first = 0;
                             if (expect(&j, ',')) continue;
                             if (!expect(&j, ']')) goto fail;
                             break;
                         }
                     }
-                } else if (!strcmp(key, "Image")) {
+                } else if (!strcmp(key, "Image") && peek(&j) == '"') {
                     if (!js_string(&j, image, sizeof image)) goto fail;
-                } else if (!strcmp(key, "Ports")) {
-                    if (!expect(&j, '[')) goto fail;
+                } else if (!strcmp(key, "Ports") && peek(&j) == '[') {
+                    expect(&j, '[');
                     if (!expect(&j, ']')) {
                         for (;;) {
                             long pub = 0;
                             char type[16] = "";
-                            if (!expect(&j, '{')) goto fail;
-                            if (!expect(&j, '}')) {
+                            if (peek(&j) != '{') {
+                                if (!js_skip(&j, 0)) goto fail;
+                            } else if (expect(&j, '{') && !expect(&j, '}')) {
                                 for (;;) {
                                     char pk[32];
                                     if (!js_string(&j, pk, sizeof pk) || !expect(&j, ':')) goto fail;
-                                    if (!strcmp(pk, "PublicPort")) {
+                                    char next = peek(&j);
+                                    if (!strcmp(pk, "PublicPort") && next >= '0' && next <= '9') {
                                         if (!js_number(&j, &pub)) goto fail;
-                                    } else if (!strcmp(pk, "Type")) {
+                                    } else if (!strcmp(pk, "Type") && next == '"') {
                                         if (!js_string(&j, type, sizeof type)) goto fail;
                                     } else if (!js_skip(&j, 0)) {
                                         goto fail;
@@ -215,19 +230,17 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                             break;
                         }
                     }
-                } else if (!strcmp(key, "Labels")) {
-                    ws(&j);
-                    if (j.p < j.end && *j.p == 'n') {
-                        if (!js_skip(&j, 0)) goto fail; /* null */
-                    } else {
-                        if (!expect(&j, '{')) goto fail;
+                } else if (!strcmp(key, "Labels") && peek(&j) == '{') {
+                    {
+                        expect(&j, '{');
                         if (!expect(&j, '}')) {
                             for (;;) {
                                 char lk[128];
                                 if (!js_string(&j, lk, sizeof lk) || !expect(&j, ':')) goto fail;
-                                if (!strcmp(lk, "com.docker.compose.project.working_dir")) {
+                                char next = peek(&j);
+                                if (!strcmp(lk, "com.docker.compose.project.working_dir") && next == '"') {
                                     if (!js_string(&j, workdir, sizeof workdir)) goto fail;
-                                } else if (!strcmp(lk, "com.docker.compose.service")) {
+                                } else if (!strcmp(lk, "com.docker.compose.service") && next == '"') {
                                     if (!js_string(&j, service, sizeof service)) goto fail;
                                 } else if (!js_skip(&j, 0)) {
                                     goto fail;
@@ -264,6 +277,7 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
     return 0;
 fail:
     free(list);
+    parse_error_at = (size_t)(j.p - json);
     return -1;
 }
 
@@ -509,9 +523,8 @@ static int docker_request(const char *request, char **resp, size_t *resp_len) {
 #endif
 
 /* WHOPORT_DEBUG: show the start of a response we could not use, escaped. */
-static void debug_dump(const char *buf, size_t len) {
-    fprintf(stderr, "whoport debug: response starts with:\n  ");
-    for (size_t i = 0; i < len && i < 600; i++) {
+static void debug_dump_raw(const char *buf, size_t len) {
+    for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)buf[i];
         if (c == '\r') fputs("\\r", stderr);
         else if (c == '\n') fputs("\\n\n  ", stderr);
@@ -519,6 +532,11 @@ static void debug_dump(const char *buf, size_t len) {
         else fputc(c, stderr);
     }
     fputc('\n', stderr);
+}
+
+static void debug_dump(const char *buf, size_t len) {
+    fprintf(stderr, "whoport debug: response starts with:\n  ");
+    debug_dump_raw(buf, len < 600 ? len : 600);
 }
 
 int wp_docker_containers(wp_container **out, size_t *count) {
@@ -532,7 +550,14 @@ int wp_docker_containers(wp_container **out, size_t *count) {
     size_t body_len;
     int status = wp_http_parse(resp, len, &body, &body_len);
     int r = status == 200 ? wp_docker_parse(body, body_len, out, count) : -1;
-    if (r != 0 && getenv("WHOPORT_DEBUG")) debug_dump(resp, len);
+    if (r != 0 && getenv("WHOPORT_DEBUG")) {
+        debug_dump(resp, len);
+        if (status == 200) {
+            size_t at = parse_error_at < 80 ? 0 : parse_error_at - 80;
+            fprintf(stderr, "whoport debug: JSON parse stopped at byte %zu of the body, around:\n  ", parse_error_at);
+            debug_dump_raw(body + at, body_len - at < 160 ? body_len - at : 160);
+        }
+    }
     if (getenv("WHOPORT_DEBUG"))
         fprintf(stderr, "whoport debug: docker status %d, parse %s, %zu published ports\n", status, r == 0 ? "ok" : "failed",
                 *count);
