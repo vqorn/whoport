@@ -1,12 +1,12 @@
 {
-    "version": "1.2.6",
+    "version": "1.2.7",
     "description": "See which project is running on which port. Then stop it.",
     "homepage": "https://github.com/vqorn/whoport",
     "license": "MIT",
     "architecture": {
         "64bit": {
-            "url": "https://github.com/vqorn/whoport/releases/download/v1.2.6/whoport-windows-x86_64.zip",
-            "hash": "69c30a6c478bff9322c9e603e87120af78bed8d86d1c674ee3a90c92badfc6d6"
+            "url": "https://github.com/vqorn/whoport/releases/download/v1.2.7/whoport-windows-x86_64.zip",
+            "hash": "687822766880c329343f8e60977e9d7404cd3adb356951e982f6612f7473f135"
         }
     },
     "bin": "whoport.exe",
