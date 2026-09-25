@@ -114,14 +114,17 @@ int wp_collect(listener_list *out) {
                 continue;
             }
             if (si.psi.soi_kind != SOCKINFO_TCP) continue;
-            DBG("pid %d fd %d: tcp family %d state %d options 0x%x lport %d\n", pid, fds[f].proc_fd,
-                si.psi.soi_family, si.psi.soi_proto.pri_tcp.tcpsi_state, (unsigned)si.psi.soi_options,
+            DBG("pid %d fd %d: tcp family %d state %d options 0x%x qlimit %d fport %d lport %d\n", pid,
+                fds[f].proc_fd, si.psi.soi_family, si.psi.soi_proto.pri_tcp.tcpsi_state,
+                (unsigned)si.psi.soi_options, (int)si.psi.soi_qlimit,
+                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport),
                 ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport));
             tcp++;
-            /* The TCP state of a listening socket can read TSI_S_CLOSED on current
-             * macOS; SO_ACCEPTCONN on the socket is the reliable signal. */
+            /* On current macOS the TCP state of a listening socket can read
+             * TSI_S_CLOSED and SO_ACCEPTCONN may be missing from soi_options.
+             * A listen backlog (soi_qlimit) is only ever set on listening sockets. */
             int listening = si.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN ||
-                            (si.psi.soi_options & SO_ACCEPTCONN);
+                            (si.psi.soi_options & SO_ACCEPTCONN) || si.psi.soi_qlimit > 0;
             if (!listening) continue;
             add_socket(out, pid, &si);
         }
