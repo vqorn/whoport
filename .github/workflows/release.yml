@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  unix:
     strategy:
       matrix:
         include:
@@ -36,3 +36,30 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: whoport-${{ matrix.target }}.tar.gz
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: make zip mingw-w64-ucrt-x86_64-gcc
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # Static runtime: the .exe runs on any Windows 10/11 without extra DLLs.
+          make VERSION="$VERSION" LDFLAGS="-static"
+          make VERSION="$VERSION" LDFLAGS="-static" test
+          ./whoport.exe --version
+          zip whoport-windows-x86_64.zip whoport.exe README.md LICENSE
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: whoport-windows-x86_64.zip

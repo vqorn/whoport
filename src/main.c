@@ -2,14 +2,10 @@
 #define _DEFAULT_SOURCE
 #include "whoport.h"
 
-#include <errno.h>
-#include <pwd.h>
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #ifndef WHOPORT_VERSION
 #define WHOPORT_VERSION "dev"
@@ -49,7 +45,8 @@ static void usage(FILE *f) {
             "  -v, --version   show the version\n"
             "\n"
             "Exit status: 0 if a queried port is in use, 1 if it is free, 2 on errors.\n"
-            "Processes of other users are only visible with sudo.\n",
+            "Processes of other users are only visible with sudo (Linux, macOS)\n"
+            "or from an administrator terminal (Windows).\n",
             WHOPORT_VERSION);
 }
 
@@ -59,7 +56,7 @@ static void project_of(const listener_t *l, char *out, size_t size) {
         snprintf(out, size, "?");
         return;
     }
-    if (!l->cwd[0] || strcmp(l->cwd, "/") == 0) {
+    if (wp_is_system_dir(l->cwd)) {
         snprintf(out, size, "(system)");
         return;
     }
@@ -78,7 +75,7 @@ static void fit(const char *in, int width, char *out, size_t size) {
         snprintf(out, size, "%s", in);
     } else if (width > 3) {
         /* Keep the end of paths, the start of commands: both read better that way. */
-        if (in[0] == '~' || in[0] == '/') snprintf(out, size, "...%s", in + len - (width - 3));
+        if (wp_is_path(in)) snprintf(out, size, "...%s", in + len - (width - 3));
         else snprintf(out, size, "%.*s...", width - 3, in);
     } else {
         snprintf(out, size, "%.*s", width, in);
@@ -193,7 +190,7 @@ static void print_detail(const listener_t *l, time_t now) {
     if (l->started > 0) {
         time_t t = (time_t)l->started;
         struct tm tm;
-        localtime_r(&t, &tm);
+        wp_localtime(l->started, &tm);
         strftime(when, sizeof when, now - t < 86400 ? "since %H:%M" : "since %b %d, %H:%M", &tm);
     }
     printf("\n  %sPort %d%s is used by %s%s%s %s(pid %d)%s\n\n", BOLD, l->port, RESET, BOLD, l->name, RESET, DIM,
@@ -207,17 +204,12 @@ static void print_detail(const listener_t *l, time_t now) {
     printf("\n  %sStop it: whoport %d --kill%s\n\n", DIM, l->port, RESET);
 }
 
-static int alive(int pid) {
-    return kill(pid, 0) == 0 || errno == EPERM;
-}
-
 static int wait_for_exit(int pid, int ms) {
-    struct timespec step = {0, 100 * 1000 * 1000};
     for (int waited = 0; waited < ms; waited += 100) {
-        if (!alive(pid)) return 1;
-        nanosleep(&step, NULL);
+        if (!wp_is_alive(pid)) return 1;
+        wp_sleep_ms(100);
     }
-    return !alive(pid);
+    return !wp_is_alive(pid);
 }
 
 static int stop(const listener_t *l, int force) {
@@ -229,8 +221,9 @@ static int stop(const listener_t *l, int force) {
     char project[WP_PATH_MAX], cmd[WP_CMD_MAX];
     project_of(l, project, sizeof project);
     wp_short_command(l->command, home, cmd, sizeof cmd);
-    if (kill(l->pid, SIGTERM) != 0) {
-        fprintf(stderr, "  %sCould not stop pid %d: %s%s\n", RED, l->pid, strerror(errno), RESET);
+    char err[256] = "";
+    if (wp_terminate(l->pid, 0, err, sizeof err) != 0) {
+        fprintf(stderr, "  %sCould not stop pid %d: %s%s\n", RED, l->pid, err, RESET);
         return 2;
     }
     if (!wait_for_exit(l->pid, 3000)) {
@@ -239,7 +232,7 @@ static int stop(const listener_t *l, int force) {
                     cmd, RESET);
             return 2;
         }
-        kill(l->pid, SIGKILL);
+        wp_terminate(l->pid, 1, err, sizeof err);
         if (!wait_for_exit(l->pid, 2000)) {
             fprintf(stderr, "  %sCould not stop pid %d.%s\n", RED, l->pid, RESET);
             return 2;
@@ -253,7 +246,8 @@ static int stop(const listener_t *l, int force) {
 int main(int argc, char **argv) {
     int ports[MAX_QUERY], nports = 0;
     int do_kill = 0, force = 0, json = 0;
-    color = isatty(STDOUT_FILENO) && !getenv("NO_COLOR");
+    wp_platform_init();
+    color = wp_stdout_is_tty() && !getenv("NO_COLOR");
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -288,11 +282,7 @@ int main(int argc, char **argv) {
     }
     if (json) color = 0;
 
-    home = getenv("HOME");
-    if (!home || !*home) {
-        struct passwd *pw = getpwuid(getuid());
-        home = pw ? pw->pw_dir : NULL;
-    }
+    home = wp_home();
 
     listener_list list = {0};
     if (wp_collect(&list) != 0) {
