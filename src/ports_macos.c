@@ -77,12 +77,19 @@ static void add_socket(listener_list *out, int pid, const struct socket_fdinfo *
     snprintf(l->addr, sizeof l->addr, "%s", buf);
 }
 
+static int debug = -1;
+#define DBG(...) do { if (debug) fprintf(stderr, "whoport debug: " __VA_ARGS__); } while (0)
+
 int wp_collect(listener_list *out) {
+    if (debug < 0) debug = getenv("WHOPORT_DEBUG") != NULL;
     int count = proc_listallpids(NULL, 0);
+    DBG("proc_listallpids(NULL) = %d\n", count);
     if (count <= 0) return -1;
     int *pids = calloc((size_t)count + 64, sizeof *pids);
     if (!pids) return -1;
     count = proc_listallpids(pids, (int)((size_t)(count + 64) * sizeof *pids));
+    DBG("proc_listallpids(buf) = %d\n", count);
+    int with_fds = 0, sockets = 0, tcp = 0;
 
     for (int i = 0; i < count; i++) {
         int pid = pids[i];
@@ -93,14 +100,23 @@ int wp_collect(listener_list *out) {
         if (!fds) continue;
         size = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, size);
         int nfds = size > 0 ? size / (int)PROC_PIDLISTFD_SIZE : 0;
+        with_fds++;
         size_t before = out->len;
         for (int f = 0; f < nfds; f++) {
             if (fds[f].proc_fdtype != PROX_FDTYPE_SOCKET) continue;
+            sockets++;
             struct socket_fdinfo si;
-            if (proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, &si, PROC_PIDFDSOCKETINFO_SIZE) !=
-                PROC_PIDFDSOCKETINFO_SIZE)
+            int got = proc_pidfdinfo(pid, fds[f].proc_fd, PROC_PIDFDSOCKETINFO, &si, PROC_PIDFDSOCKETINFO_SIZE);
+            if (got != PROC_PIDFDSOCKETINFO_SIZE) {
+                DBG("pid %d fd %d: proc_pidfdinfo returned %d (want %d)\n", pid, fds[f].proc_fd, got,
+                    (int)PROC_PIDFDSOCKETINFO_SIZE);
                 continue;
+            }
+            DBG("pid %d fd %d: family %d kind %d state %d lport %d\n", pid, fds[f].proc_fd, si.psi.soi_family,
+                si.psi.soi_kind, si.psi.soi_proto.pri_tcp.tcpsi_state,
+                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport));
             if (si.psi.soi_kind != SOCKINFO_TCP) continue;
+            tcp++;
             if (si.psi.soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
             add_socket(out, pid, &si);
         }
@@ -124,6 +140,7 @@ int wp_collect(listener_list *out) {
         }
     }
     free(pids);
+    DBG("processes with fds: %d, sockets: %d, tcp: %d, listening: %zu\n", with_fds, sockets, tcp, out->len);
     wp_list_sort_dedupe(out);
     return 0;
 }

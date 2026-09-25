@@ -31,7 +31,12 @@ for _ in $(seq 1 50); do
     "$BIN" "$PORT" >/dev/null 2>&1 && break
     sleep 0.1
 done
-"$BIN" "$PORT" >/dev/null || fail "server on $PORT not detected"
+if ! "$BIN" "$PORT" >/dev/null; then
+    echo "--- whoport --no-color" >&2; "$BIN" --no-color >&2 || true
+    echo "--- WHOPORT_DEBUG (last 40 lines)" >&2; WHOPORT_DEBUG=1 "$BIN" --no-color 2>&1 | tail -40 >&2 || true
+    echo "--- lsof" >&2; lsof -nP -iTCP -sTCP:LISTEN >&2 2>/dev/null || true
+    fail "server on $PORT not detected"
+fi
 pass "busy port reports exit status 0"
 
 OUT=$("$BIN" --no-color)
