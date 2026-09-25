@@ -91,6 +91,22 @@ void wp_sleep_ms(int ms) {
     Sleep((DWORD)ms);
 }
 
+int wp_port_bindable(int port) {
+    SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (s == INVALID_SOCKET) return 0;
+    /* Without this Windows lets a second socket share a port in some cases. */
+    BOOL exclusive = TRUE;
+    setsockopt(s, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&exclusive, sizeof exclusive);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((u_short)port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    int ok = bind(s, (struct sockaddr *)&addr, sizeof addr) == 0;
+    closesocket(s);
+    return ok;
+}
+
 void wp_localtime(long long t, struct tm *out) {
     time_t tt = (time_t)t;
     localtime_s(out, &tt);

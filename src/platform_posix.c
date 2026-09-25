@@ -11,6 +11,8 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 
 void wp_platform_init(void) {}
 
@@ -38,6 +40,19 @@ int wp_terminate(int pid, int force, char *err, size_t err_size) {
 void wp_sleep_ms(int ms) {
     struct timespec t = {ms / 1000, (long)(ms % 1000) * 1000000L};
     nanosleep(&t, NULL);
+}
+
+int wp_port_bindable(int port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return 0;
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons((unsigned short)port);
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    int ok = bind(fd, (struct sockaddr *)&addr, sizeof addr) == 0;
+    close(fd);
+    return ok;
 }
 
 void wp_localtime(long long t, struct tm *out) {

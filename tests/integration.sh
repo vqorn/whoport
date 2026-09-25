@@ -79,6 +79,11 @@ assert e['memory_bytes'] > 0 and e['uptime_seconds'] >= 0, e
 " || fail "json output: $JSON"
 pass "json output"
 
+FREE=$("$BIN" --free "$PORT")
+[ "$FREE" -gt "$PORT" ] 2>/dev/null || fail "--free returned '$FREE', expected a port after the busy $PORT"
+[ "$("$BIN" --free "$FREE")" = "$FREE" ] || fail "--free does not return a free start port itself"
+pass "--free skips the busy port"
+
 "$BIN" --no-color "$PORT" --kill | grep -q "Port $PORT is free now" || fail "kill did not report success"
 for _ in $(seq 1 20); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 0.1; done
 kill -0 "$SERVER_PID" 2>/dev/null && fail "server still running after --kill"

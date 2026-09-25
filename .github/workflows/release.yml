@@ -80,3 +80,49 @@ jobs:
           name: whoport ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
           files: whoport-windows-x86_64.zip
+
+  # Refresh the Scoop manifest and Homebrew formula with the new checksums.
+  packages:
+    needs: [unix, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - name: Download release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$TAG" -R "${{ github.repository }}" -D dist
+      - name: Update manifests
+        run: ./scripts/update-packages.sh "${TAG#v}" dist
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bucket/whoport.json Formula/whoport.rb
+          git diff --cached --quiet || git commit -m "Update Scoop and Homebrew packages to $TAG"
+          git push
+
+  # Install the published packages the way users will.
+  verify-homebrew:
+    needs: packages
+    runs-on: macos-latest
+    steps:
+      - run: |
+          brew tap vqorn/whoport https://github.com/vqorn/whoport
+          brew install vqorn/whoport/whoport
+          whoport --version | grep -F "${TAG#v}"
+
+  verify-scoop:
+    needs: packages
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: |
+          Invoke-Expression "& {$(Invoke-RestMethod get.scoop.sh)} -RunAsAdmin"
+          $env:PATH = "$env:USERPROFILE\scoop\shims;$env:PATH"
+          scoop bucket add vqorn https://github.com/vqorn/whoport
+          scoop install vqorn/whoport
+          $v = whoport --version
+          Write-Host $v
+          if ($v -notmatch [regex]::Escape($env:TAG.TrimStart('v'))) { exit 1 }

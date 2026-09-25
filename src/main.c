@@ -34,6 +34,7 @@ static void usage(FILE *f) {
             "  whoport                  list every listening port\n"
             "  whoport <port>...        show who is using these ports\n"
             "  whoport <port> --kill    stop the process on that port\n"
+            "  whoport --free [port]    print the first free port from [port] (default 3000)\n"
             "\n"
             "Options\n"
             "  -k, --kill      stop the process (SIGTERM, then waits up to 3 seconds)\n"
@@ -59,7 +60,7 @@ static void project_of(const listener_t *l, char *out, size_t size) {
         else snprintf(out, size, "(docker)");
         return;
     }
-    if (l->pid < 0) {
+    if (l->pid < 0 || (l->restricted && !l->cwd[0])) {
         snprintf(out, size, "?");
         return;
     }
@@ -334,7 +335,7 @@ static int stop(const listener_t *l, int force) {
 
 int main(int argc, char **argv) {
     int ports[MAX_QUERY], nports = 0;
-    int do_kill = 0, force = 0, json = 0, all = 0;
+    int do_kill = 0, force = 0, json = 0, all = 0, free_mode = 0;
     wp_platform_init();
     color = wp_stdout_is_tty() && !getenv("NO_COLOR");
 
@@ -350,6 +351,8 @@ int main(int argc, char **argv) {
             do_kill = 1;
         } else if (!strcmp(a, "-f") || !strcmp(a, "--force")) {
             force = 1;
+        } else if (!strcmp(a, "--free")) {
+            free_mode = 1;
         } else if (!strcmp(a, "-a") || !strcmp(a, "--all")) {
             all = 1;
         } else if (!strcmp(a, "-j") || !strcmp(a, "--json")) {
@@ -372,6 +375,10 @@ int main(int argc, char **argv) {
         return 2;
     }
     if (json) color = 0;
+    if (free_mode && (do_kill || nports > 1)) {
+        fprintf(stderr, "whoport: --free takes at most one start port, e.g. whoport --free 3000\n");
+        return 2;
+    }
 
     home = wp_home();
 
@@ -381,6 +388,25 @@ int main(int argc, char **argv) {
         return 2;
     }
     time_t now = time(NULL);
+
+    /* --free: first port from the start that nothing listens on and that can
+     * actually be bound. Prints only the number, so scripts can use it. */
+    if (free_mode) {
+        int start = nports ? ports[0] : 3000;
+        for (int p = start; p <= 65535; p++) {
+            int taken = 0;
+            for (size_t i = 0; i < list.len && !taken; i++) taken = list.items[i].port == p;
+            if (!taken && wp_port_bindable(p)) {
+                if (json) printf("{\"port\": %d}\n", p);
+                else printf("%d\n", p);
+                wp_list_free(&list);
+                return 0;
+            }
+        }
+        fprintf(stderr, "whoport: no free port from %d\n", start);
+        wp_list_free(&list);
+        return 1;
+    }
 
     /* Ports published by Docker belong to a container, not to the Docker
      * daemon or proxy process that holds the socket. */
