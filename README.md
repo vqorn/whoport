@@ -82,8 +82,8 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 ```
   PORT   PROJECT          COMMAND                              PID    RUNNING    MEMORY
   3000   ~/code/webshop   node server.js                      4121     2h 14m     46 MB
-  5433   ~/code/webshop   container webshop-db-1 (postgres:16)
-  6379   (docker)         container redis (redis:7)
+  5433   ~/code/webshop   container webshop-db-1 (postgres:16)     -          ?         ?
+  6379   (docker)         container redis (redis:7)                -          ?         ?
 ```
 
 `whoport 5433 --kill` then runs the equivalent of `docker stop webshop-db-1`. Set `WHOPORT_NO_DOCKER=1` to skip the Docker lookup.
@@ -106,7 +106,7 @@ whoport 5432 >/dev/null || docker compose up -d db
 | Project folder | `/proc/<pid>/cwd` | `proc_pidinfo` | the process's PEB |
 | Uptime, memory | `/proc/<pid>/{stat,statm}` | `proc_pidinfo` | `GetProcessTimes`, `GetProcessMemoryInfo` |
 
-Processes of other users (databases started by the system, Docker) can only be inspected with `sudo` on Linux and macOS, or from an administrator terminal on Windows. Without it, their ports are still listed.
+Processes of other users (databases started by the system, Docker) can only be inspected with `sudo` on Linux and macOS, or from an administrator terminal on Windows. Without it, their ports are hidden; `whoport --all` lists them.
 
 On Windows, `--kill` ends the process right away: console programs have no equivalent of a polite SIGTERM.
 
