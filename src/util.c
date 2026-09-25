@@ -137,11 +137,20 @@ void wp_format_bytes(long long b, char *out, size_t size) {
 }
 
 void wp_shorten_home(const char *path, const char *home, char *out, size_t size) {
+    /* Windows paths ("C:\Users\ana\shop", e.g. from Docker Compose) are
+     * shown with forward slashes and compared case-insensitively. */
+    char norm[WP_PATH_MAX];
+    int windows = isalpha((unsigned char)path[0]) && path[1] == ':';
+    wp_copy(norm, sizeof norm, path);
+    if (windows)
+        for (char *c = norm; *c; c++)
+            if (*c == '\\') *c = '/';
     size_t n = home ? strlen(home) : 0;
-    if (n > 1 && strncmp(path, home, n) == 0 && (path[n] == '/' || path[n] == '\0')) {
-        snprintf(out, size, "~%s", path + n);
+    int match = n > 1 && (windows ? strncasecmp(norm, home, n) : strncmp(norm, home, n)) == 0;
+    if (match && (norm[n] == '/' || norm[n] == '\0')) {
+        snprintf(out, size, "~%s", norm + n);
     } else {
-        snprintf(out, size, "%s", path);
+        snprintf(out, size, "%s", norm);
     }
 }
 

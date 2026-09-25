@@ -95,11 +95,11 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 ```
   PORT   PROJECT          COMMAND                              PID    RUNNING    MEMORY
   3000   ~/code/webshop   node server.js                      4121     2h 14m     46 MB
-  5433   ~/code/webshop   container webshop-db-1 (postgres:16)     -          ?         ?
-  6379   (docker)         container redis (redis:7)                -          ?         ?
+  5433   ~/code/webshop   docker webshop-db-1                      -     2h 14m         -
+  6379   (docker)         docker redis                             -      3d 1h         -
 ```
 
-`whoport 5433 --kill` then runs the equivalent of `docker stop webshop-db-1`. Set `WHOPORT_NO_DOCKER=1` to skip the Docker lookup.
+`whoport 5433` shows the image as well. `whoport 5433 --kill` then runs the equivalent of `docker stop webshop-db-1`. Works with Docker Engine, Docker Desktop (also on Windows), Colima and OrbStack. Set `WHOPORT_NO_DOCKER=1` to skip the Docker lookup.
 
 ### Scripts
 
