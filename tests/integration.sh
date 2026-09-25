@@ -95,4 +95,8 @@ pass "--kill stops the server and frees the port"
 [ "$("$BIN" --version)" != "" ] || fail "no version"
 pass "argument errors"
 
+"$BIN" help | grep -q -- "--kill" || fail "whoport help does not list the commands"
+"$BIN" --help | grep -q -- "--free" || fail "whoport --help does not list the commands"
+pass "help"
+
 echo "all integration tests passed"

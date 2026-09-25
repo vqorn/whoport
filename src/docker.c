@@ -406,7 +406,16 @@ static int docker_request(const char *request, char **resp, size_t *resp_len) {
             cap *= 2;
         }
         DWORD got = 0;
-        if (!ReadFile(h, buf + len, (DWORD)(cap - len - 1), &got, NULL) || got == 0) break;
+        if (!ReadFile(h, buf + len, (DWORD)(cap - len - 1), &got, NULL)) {
+            DWORD err = GetLastError();
+            if (err != ERROR_MORE_DATA) {
+                if (getenv("WHOPORT_DEBUG"))
+                    fprintf(stderr, "whoport debug: docker pipe read stopped after %zu bytes (error %lu)\n", len,
+                            (unsigned long)err);
+                break;
+            }
+        }
+        if (got == 0) break;
         len += got;
         if (response_complete(buf, len)) break;
     }
@@ -499,6 +508,19 @@ static int docker_request(const char *request, char **resp, size_t *resp_len) {
 }
 #endif
 
+/* WHOPORT_DEBUG: show the start of a response we could not use, escaped. */
+static void debug_dump(const char *buf, size_t len) {
+    fprintf(stderr, "whoport debug: response starts with:\n  ");
+    for (size_t i = 0; i < len && i < 600; i++) {
+        unsigned char c = (unsigned char)buf[i];
+        if (c == '\r') fputs("\\r", stderr);
+        else if (c == '\n') fputs("\\n\n  ", stderr);
+        else if (c < 32 || c > 126) fprintf(stderr, "\\x%02x", c);
+        else fputc(c, stderr);
+    }
+    fputc('\n', stderr);
+}
+
 int wp_docker_containers(wp_container **out, size_t *count) {
     *out = NULL;
     *count = 0;
@@ -510,6 +532,7 @@ int wp_docker_containers(wp_container **out, size_t *count) {
     size_t body_len;
     int status = wp_http_parse(resp, len, &body, &body_len);
     int r = status == 200 ? wp_docker_parse(body, body_len, out, count) : -1;
+    if (r != 0 && getenv("WHOPORT_DEBUG")) debug_dump(resp, len);
     if (getenv("WHOPORT_DEBUG"))
         fprintf(stderr, "whoport debug: docker status %d, parse %s, %zu published ports\n", status, r == 0 ? "ok" : "failed",
                 *count);
