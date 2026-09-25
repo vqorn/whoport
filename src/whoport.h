@@ -34,6 +34,7 @@ typedef struct {
     char workdir[WP_PATH_MAX]; /* com.docker.compose.project.working_dir */
     char service[128];         /* com.docker.compose.service */
     long long created;         /* seconds since the epoch, 0 if unknown */
+    long long started;         /* last start (State.StartedAt), 0 if unknown */
 } wp_container;
 
 typedef struct {
@@ -59,6 +60,8 @@ int wp_port_bindable(int port); /* 1 if a TCP listener could bind this port righ
 int wp_docker_containers(wp_container **out, size_t *count); /* -1 when Docker is not reachable */
 int wp_docker_stop(const char *name, char *err, size_t err_size);
 int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *count);
+long long wp_parse_rfc3339(const char *s); /* "2026-09-25T08:06:12.5Z" -> epoch seconds, -1 if invalid */
+long long wp_docker_started_at(const char *json); /* State.StartedAt of /containers/<name>/json, -1 if unknown */
 int wp_http_parse(char *resp, size_t len, char **body, size_t *body_len);
 int wp_http_complete(const char *buf, size_t len);
 

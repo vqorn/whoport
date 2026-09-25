@@ -252,6 +252,15 @@ static void test_docker(void) {
         CHECK_STR(c[0].workdir, "");
     }
     free(c);
+    CHECK_INT(wp_parse_rfc3339("1970-01-02T00:00:00Z"), -1); /* before 1971: treated as unknown */
+    CHECK_INT(wp_parse_rfc3339("2024-09-22T10:13:20Z"), 1727000000);
+    CHECK_INT(wp_parse_rfc3339("2024-09-22T10:13:20.123456789Z"), 1727000000);
+    CHECK_INT(wp_parse_rfc3339("2024-09-22T12:13:20+02:00"), 1727000000);
+    CHECK_INT(wp_parse_rfc3339("2024-02-29T00:00:00Z"), 1709164800);
+    CHECK_INT(wp_parse_rfc3339("0001-01-01T00:00:00Z"), -1);
+    CHECK_INT(wp_parse_rfc3339("yesterday"), -1);
+    CHECK_INT(wp_docker_started_at("{\"State\":{\"Status\":\"running\",\"StartedAt\":\"2024-09-22T10:13:20.5Z\"}}"), 1727000000);
+    CHECK_INT(wp_docker_started_at("{\"State\":{}}"), -1);
     CHECK_INT(wp_docker_parse("[]", 2, &c, &n), 0);
     CHECK_INT(n, 0);
     CHECK_INT(wp_docker_parse("[{\"Names\":[\"/x\"", 15, &c, &n), -1);
