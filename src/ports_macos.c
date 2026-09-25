@@ -1,5 +1,8 @@
 /* macOS backend: walks every process's file descriptors through libproc. */
 #ifdef __APPLE__
+/* The Makefile asks for strict POSIX, which hides BSD types (u_short, u_int)
+ * that libproc's own headers rely on. Darwin extensions bring them back. */
+#define _DARWIN_C_SOURCE
 #include "whoport.h"
 
 #include <arpa/inet.h>
