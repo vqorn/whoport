@@ -49,6 +49,7 @@ int wp_collect(listener_list *out);
 /* Process control and environment (platform_posix.c / ports_windows.c). */
 void wp_platform_init(void);
 int wp_stdout_is_tty(void);
+int wp_term_width(void); /* columns of the terminal, 0 if unknown */
 const char *wp_home(void);
 int wp_is_alive(int pid);
 int wp_terminate(int pid, int force, char *err, size_t err_size); /* 0 when the signal was sent */

@@ -1,6 +1,7 @@
 /* Process control and environment on Linux and macOS. */
 #ifndef _WIN32
 #define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE
 #include "whoport.h"
 
 #include <errno.h>
@@ -13,11 +14,19 @@
 #include <unistd.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <sys/ioctl.h>
 
 void wp_platform_init(void) {}
 
 int wp_stdout_is_tty(void) {
     return isatty(STDOUT_FILENO);
+}
+
+int wp_term_width(void) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
+    const char *c = getenv("COLUMNS");
+    return c ? atoi(c) : 0;
 }
 
 const char *wp_home(void) {

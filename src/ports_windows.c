@@ -43,6 +43,14 @@ int wp_stdout_is_tty(void) {
     return _isatty(_fileno(stdout)) && vt_enabled;
 }
 
+int wp_term_width(void) {
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
+        return info.srWindow.Right - info.srWindow.Left + 1;
+    const char *c = getenv("COLUMNS");
+    return c ? atoi(c) : 0;
+}
+
 static void to_utf8(const WCHAR *w, size_t wlen, char *out, size_t size) {
     int n = WideCharToMultiByte(CP_UTF8, 0, w, (int)wlen, out, (int)size - 1, NULL, NULL);
     out[n > 0 ? n : 0] = '\0';
