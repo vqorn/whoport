@@ -168,6 +168,7 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
     if (expect(&j, ']')) return 0;
     for (;;) {
         char name[128] = "", image[128] = "", workdir[WP_PATH_MAX] = "", service[128] = "";
+        long created = 0;
         long ports[64];
         int nports = 0;
         if (!expect(&j, '{')) goto fail;
@@ -193,6 +194,8 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                             break;
                         }
                     }
+                } else if (!strcmp(key, "Created") && peek(&j) >= '0' && peek(&j) <= '9') {
+                    if (!js_number(&j, &created)) goto fail;
                 } else if (!strcmp(key, "Image") && peek(&j) == '"') {
                     if (!js_string(&j, image, sizeof image)) goto fail;
                 } else if (!strcmp(key, "Ports") && peek(&j) == '[') {
@@ -267,6 +270,7 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
             wp_copy(e->image, sizeof e->image, image);
             wp_copy(e->workdir, sizeof e->workdir, workdir);
             wp_copy(e->service, sizeof e->service, service);
+            e->created = created;
         }
         if (expect(&j, ',')) continue;
         if (!expect(&j, ']')) goto fail;

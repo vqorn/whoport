@@ -33,6 +33,7 @@ typedef struct {
     char image[128];
     char workdir[WP_PATH_MAX]; /* com.docker.compose.project.working_dir */
     char service[128];         /* com.docker.compose.service */
+    long long created;         /* seconds since the epoch, 0 if unknown */
 } wp_container;
 
 typedef struct {

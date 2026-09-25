@@ -85,7 +85,7 @@ static void project_of(const listener_t *l, char *out, size_t size) {
 /* What to show in the COMMAND column. */
 static void command_of(const listener_t *l, char *out, size_t size) {
     if (l->container[0]) {
-        snprintf(out, size, "container %s (%s)", l->container, l->image);
+        snprintf(out, size, "docker %s", l->container); /* the image is in the detail view */
         return;
     }
     wp_short_command(l->command, home, out, size);
@@ -213,8 +213,10 @@ static void print_table(const listener_list *list, time_t now, int all) {
         long long secs = uptime_of(l, now);
         wp_format_duration(secs, up, sizeof up);
         wp_format_bytes(l->rss, mem, sizeof mem);
-        if (l->pid >= 0) snprintf(pid, sizeof pid, "%d", l->pid);
+        /* For a container, pid and memory would be Docker's own, not the container's. */
+        if (l->pid >= 0 && !l->container[0]) snprintf(pid, sizeof pid, "%d", l->pid);
         else snprintf(pid, sizeof pid, "-");
+        if (l->container[0]) snprintf(mem, sizeof mem, "-");
         project_of(l, proj, sizeof proj);
         command_of(l, cmd, sizeof cmd);
 
@@ -274,6 +276,7 @@ static void print_detail(const listener_t *l, time_t now) {
                RESET);
         printf("  %-9s %s\n", "Image", l->image);
         if (l->compose_dir[0]) printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
+        if (l->started > 0) printf("  %-9s %s %s\n", "Running", up, when);
         printf("  %-9s %s\n", "Address", l->addr);
         printf("\n  %sStop it: whoport %d --kill   (stops the container)%s\n\n", DIM, l->port, RESET);
         return;
@@ -430,6 +433,8 @@ int main(int argc, char **argv) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                l->started = containers[k].created > 0 ? containers[k].created : -1;
+                l->rss = -1;
                 matched = 1;
             }
             /* Without a userland proxy Docker forwards ports in the kernel, so
@@ -442,6 +447,8 @@ int main(int argc, char **argv) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                l->started = containers[k].created > 0 ? containers[k].created : -1;
+                l->rss = -1;
             }
         }
         free(containers);

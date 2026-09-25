@@ -64,6 +64,9 @@ static void test_paths(void) {
     wp_shorten_home("/home/ana", "/home/ana", b, sizeof b);           CHECK_STR(b, "~");
     wp_shorten_home("/home/anabel/x", "/home/ana", b, sizeof b);      CHECK_STR(b, "/home/anabel/x");
     wp_shorten_home("/srv/app", NULL, b, sizeof b);                   CHECK_STR(b, "/srv/app");
+    wp_shorten_home("C:\\Users\\johan\\Fontia", "C:/Users/johan", b, sizeof b); CHECK_STR(b, "~/Fontia");
+    wp_shorten_home("c:\\users\\johan\\x", "C:/Users/johan", b, sizeof b);      CHECK_STR(b, "~/x");
+    wp_shorten_home("D:\\code\\shop", "C:/Users/johan", b, sizeof b);         CHECK_STR(b, "D:/code/shop");
 
     wp_short_command("node /home/ana/shop/node_modules/.bin/vite --port 5173", NULL, b, sizeof b);
     CHECK_STR(b, "node vite --port 5173");
@@ -228,6 +231,7 @@ static void test_docker(void) {
         CHECK_STR(c[0].image, "postgres:16");
         CHECK_STR(c[0].workdir, "/home/ana/code/shop");
         CHECK_STR(c[0].service, "db");
+        CHECK_INT(c[0].created, 1727000000);
         CHECK_INT(c[1].port, 6379);
         CHECK_STR(c[1].name, "redis");
         CHECK_STR(c[1].workdir, "");
