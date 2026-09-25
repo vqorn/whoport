@@ -21,3 +21,23 @@ jobs:
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Werror"
       - name: Unit and integration tests
         run: make CC=${{ matrix.cc }} test
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          path-type: inherit
+          install: make mingw-w64-ucrt-x86_64-gcc
+      - name: Build without warnings
+        run: make CFLAGS="-O2 -Werror"
+      - name: Unit and integration tests
+        run: make test

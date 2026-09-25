@@ -21,12 +21,24 @@ pass() { echo "ok - $*"; }
 mkdir -p "$PROJECT/.git" "$PROJECT/src"
 cd "$PROJECT/src"
 
+# On Windows (MSYS2 / Git Bash) the shell's PIDs differ from Windows PIDs.
+case "$(uname -s)" in
+    MINGW* | MSYS* | CYGWIN*) WINDOWS=1 ;;
+    *) WINDOWS=0 ;;
+esac
+if [ "$WINDOWS" = 1 ]; then
+    PY=$(command -v python || command -v python3)
+else
+    PY=$(command -v python3 || command -v python)
+fi
+
 # Port must be free before we start.
 if "$BIN" "$PORT" >/dev/null; then fail "port $PORT already in use before the test"; fi
 pass "free port reports exit status 1"
 
-python3 -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
+"$PY" -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1 &
 SERVER_PID=$!
+REAL_PID=$SERVER_PID
 for _ in $(seq 1 50); do
     "$BIN" "$PORT" >/dev/null 2>&1 && break
     sleep 0.1
@@ -38,6 +50,7 @@ if ! "$BIN" "$PORT" >/dev/null; then
     fail "server on $PORT not detected"
 fi
 pass "busy port reports exit status 0"
+if [ "$WINDOWS" = 1 ] && [ -r "/proc/$SERVER_PID/winpid" ]; then REAL_PID=$(cat "/proc/$SERVER_PID/winpid"); fi
 
 OUT=$("$BIN" --no-color)
 echo "$OUT" | grep -q "$PORT" || fail "table does not list port $PORT: $OUT"
@@ -51,20 +64,20 @@ echo "$DETAIL" | grep -q "only this computer" || fail "detail view lacks loopbac
 pass "detail view"
 
 JSON=$("$BIN" --json "$PORT")
-echo "$JSON" | python3 -c "
+echo "$JSON" | "$PY" -c "
 import json, sys
 data = json.load(sys.stdin)
 assert len(data) == 1, data
 e = data[0]
 assert e['port'] == $PORT, e
-assert e['pid'] == $SERVER_PID, e
+assert e['pid'] == $REAL_PID, e
 assert e['project'].endswith('demo-shop'), e
 assert e['memory_bytes'] > 0 and e['uptime_seconds'] >= 0, e
 " || fail "json output: $JSON"
 pass "json output"
 
 "$BIN" --no-color "$PORT" --kill | grep -q "Port $PORT is free now" || fail "kill did not report success"
-sleep 0.2
+for _ in $(seq 1 20); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 0.1; done
 kill -0 "$SERVER_PID" 2>/dev/null && fail "server still running after --kill"
 SERVER_PID=""
 if "$BIN" "$PORT" >/dev/null; then fail "port still reported busy after --kill"; fi

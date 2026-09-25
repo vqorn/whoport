@@ -19,12 +19,20 @@ You know the drill: `lsof -i :3000`, squint at a PID, `ps`, hunt for the termina
 - 🔪 **`whoport 3000 --kill`** stops it politely (SIGTERM), waits, and confirms the port is free. `--force` if it won't listen
 - 🧾 **`--json`** for scripts, and exit codes you can use in `if` statements
 - ⚡ A single small C binary. No dependencies, no runtime, starts instantly
-- 🐧 Linux and 🍎 macOS
+- 🐧 Linux, 🍎 macOS and 🪟 Windows
 
 ## Install
 
+**Linux and macOS**
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/vqorn/whoport/main/install.sh | sh
+```
+
+**Windows** (PowerShell)
+
+```powershell
+irm https://raw.githubusercontent.com/vqorn/whoport/main/install.ps1 | iex
 ```
 
 Or grab a binary from [Releases](https://github.com/vqorn/whoport/releases), or build it yourself with any C compiler:
@@ -67,15 +75,17 @@ whoport 5432 >/dev/null || docker compose up -d db
 
 ## How it works
 
-| | Linux | macOS |
-|---|---|---|
-| Listening sockets | `/proc/net/tcp`, `/proc/net/tcp6` | `libproc` socket info |
-| Socket → process | socket inodes in `/proc/<pid>/fd` | file descriptors per process |
-| Command, folder, uptime, memory | `/proc/<pid>/{cmdline,cwd,stat,statm}` | `KERN_PROCARGS2`, `proc_pidinfo` |
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Listening sockets | `/proc/net/tcp`, `/proc/net/tcp6` | `libproc` socket info | `GetExtendedTcpTable` |
+| Socket → process | socket inodes in `/proc/<pid>/fd` | file descriptors per process | owning PID in the table |
+| Command line | `/proc/<pid>/cmdline` | `KERN_PROCARGS2` | `NtQueryInformationProcess` |
+| Project folder | `/proc/<pid>/cwd` | `proc_pidinfo` | the process's PEB |
+| Uptime, memory | `/proc/<pid>/{stat,statm}` | `proc_pidinfo` | `GetProcessTimes`, `GetProcessMemoryInfo` |
 
-Processes of other users (databases started by the system, Docker) can only be inspected with `sudo`. Without it, Linux still lists their ports and marks them as such.
+Processes of other users (databases started by the system, Docker) can only be inspected with `sudo` on Linux and macOS, or from an administrator terminal on Windows. Without it, their ports are still listed.
 
-Windows is not supported yet.
+On Windows, `--kill` ends the process right away: console programs have no equivalent of a polite SIGTERM.
 
 ## Development
 
@@ -84,13 +94,17 @@ make          # build
 make test     # unit tests (with AddressSanitizer and UBSan) + an end-to-end test
 ```
 
-The end-to-end test starts a real server inside a throwaway project, checks that `whoport` finds it with the right folder, command and JSON, then stops it with `--kill`. CI runs everything on Linux (gcc and clang) and macOS.
+The end-to-end test starts a real server inside a throwaway project, checks that `whoport` finds it with the right folder, command and JSON, then stops it with `--kill`. CI runs everything on Linux (gcc and clang), macOS and Windows (MinGW via MSYS2).
+
+To build on Windows, install [MSYS2](https://www.msys2.org) with `make` and `mingw-w64-ucrt-x86_64-gcc`, then run `make` in the UCRT64 shell.
 
 ```
 src/main.c          command line, output, --kill
 src/util.c          formatting, project detection, /proc parsing
 src/ports_linux.c   Linux backend
 src/ports_macos.c   macOS backend
+src/ports_windows.c Windows backend
+src/platform_posix.c  process control on Linux and macOS
 ```
 
 ## License

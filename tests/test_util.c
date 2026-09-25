@@ -9,6 +9,20 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#define MKDIR(p) _mkdir(p)
+static char *make_temp_dir(char *tmpl) {
+    return _mktemp(tmpl) && _mkdir(tmpl) == 0 ? tmpl : NULL;
+}
+#else
+#define MKDIR(p) mkdir((p), 0700)
+static char *make_temp_dir(char *tmpl) {
+    return mkdtemp(tmpl);
+}
+#endif
+
 static int failures = 0, checks = 0;
 
 #define CHECK_STR(got, want)                                                                  \
@@ -55,6 +69,12 @@ static void test_paths(void) {
     CHECK_STR(b, "node vite --port 5173");
     wp_short_command("/usr/bin/python3 -m http.server 8000", NULL, b, sizeof b);
     CHECK_STR(b, "python3 -m http.server 8000");
+    wp_short_command("\"C:\\Program Files\\nodejs\\node.exe\" server.js", NULL, b, sizeof b);
+    CHECK_STR(b, "node server.js");
+    wp_short_command("\"unterminated", NULL, b, sizeof b);
+    CHECK_STR(b, "unterminated");
+    wp_short_command("C:\\nodejs\\node.exe D:\\code\\shop\\server.js", NULL, b, sizeof b);
+    CHECK_STR(b, "node server.js");
     wp_short_command("npm run dev", NULL, b, sizeof b);
     CHECK_STR(b, "npm run dev");
     wp_short_command("a/", NULL, b, sizeof b);
@@ -65,8 +85,16 @@ static void test_paths(void) {
 }
 
 static void test_project_root(void) {
+#ifdef _WIN32
+    char base[512];
+    const char *tmp = getenv("TEMP");
+    snprintf(base, sizeof base, "%s/whoport-test-XXXXXX", tmp ? tmp : ".");
+    for (char *c = base; *c; c++)
+        if (*c == '\\') *c = '/';
+#else
     char base[] = "/tmp/whoport-test-XXXXXX";
-    if (!mkdtemp(base)) {
+#endif
+    if (!make_temp_dir(base)) {
         perror("mkdtemp");
         failures++;
         return;
@@ -75,12 +103,12 @@ static void test_project_root(void) {
     snprintf(proj, sizeof proj, "%s/shop", base);
     snprintf(deep, sizeof deep, "%s/shop/src/server", base);
     snprintf(git, sizeof git, "%s/shop/.git", base);
-    mkdir(proj, 0700);
-    mkdir(git, 0700);
+    MKDIR(proj);
+    MKDIR(git);
     char mid[512];
     snprintf(mid, sizeof mid, "%s/shop/src", base);
-    mkdir(mid, 0700);
-    mkdir(deep, 0700);
+    MKDIR(mid);
+    MKDIR(deep);
 
     CHECK_INT(wp_find_project_root(deep, base, out, sizeof out), 1);
     CHECK_STR(out, proj);
@@ -104,6 +132,7 @@ static void test_parse(void) {
     CHECK_INT(wp_parse_port("30a0"), -1);
     CHECK_INT(wp_parse_port(""), -1);
 
+#ifndef _WIN32
     int port, state;
     unsigned long inode;
     char addr[64];
@@ -130,6 +159,7 @@ static void test_parse(void) {
 
     CHECK_INT(wp_parse_proc_net_line("  sl  local_address rem_address   st", 0, &port, addr, sizeof addr, &inode, &state), 0);
     CHECK_INT(wp_parse_proc_net_line(v6, 0, &port, addr, sizeof addr, &inode, &state), 0);
+#endif
 }
 
 static void test_dedupe(void) {

@@ -2,7 +2,9 @@
 #define _DEFAULT_SOURCE
 #include "whoport.h"
 
+#ifndef _WIN32
 #include <arpa/inet.h>
+#endif
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,6 +141,7 @@ int wp_find_project_root(const char *dir, const char *home, char *out, size_t si
         if (home && strcmp(cur, home) == 0) return 0;
         char *slash = strrchr(cur, '/');
         if (!slash || slash == cur) return 0;
+        if (slash == cur + 2 && cur[1] == ':') return 0; /* "C:/" on Windows */
         *slash = '\0';
     }
 }
@@ -153,17 +156,28 @@ void wp_short_command(const char *command, const char *home, char *out, size_t s
         while (*p == ' ') p++;
         if (!*p) break;
         const char *start = p;
-        while (*p && *p != ' ') p++;
-        size_t len = (size_t)(p - start);
+        size_t len;
+        if (*p == '"') { /* Windows quotes paths with spaces: "C:\\Program Files\\node.exe" */
+            start = ++p;
+            while (*p && *p != '"') p++;
+            len = (size_t)(p - start);
+            if (*p == '"') p++;
+        } else {
+            while (*p && *p != ' ') p++;
+            len = (size_t)(p - start);
+        }
+        const char *end = start + len;
         const char *tok = start;
         /* Paths shrink to their last component. */
-        if (len > 1 && memchr(start, '/', len)) {
+        if (len > 1 && (memchr(start, '/', len) || memchr(start, '\\', len))) {
             const char *base = start;
-            for (const char *q = start; q < p; q++)
-                if (*q == '/' && q + 1 < p) base = q + 1;
+            for (const char *q = start; q < end; q++)
+                if ((*q == '/' || *q == '\\') && q + 1 < end) base = q + 1;
             len -= (size_t)(base - start);
             tok = base;
         }
+        /* "node.exe" reads as "node". */
+        if (len > 4 && strncmp(tok + len - 4, ".exe", 4) == 0) len -= 4;
         if (w > 0 && w + 1 < size) out[w++] = ' ';
         for (size_t i = 0; i < len && w + 1 < size; i++) out[w++] = tok[i];
         out[w] = '\0';
@@ -181,6 +195,7 @@ int wp_parse_port(const char *s) {
     return v >= 1 ? (int)v : -1;
 }
 
+#ifndef _WIN32
 /* One line of /proc/net/tcp or /proc/net/tcp6. Addresses are hex words in
  * host (little-endian) byte order. Returns 1 on success. */
 int wp_parse_proc_net_line(const char *line, int ipv6, int *port, char *addr, size_t addr_size,
@@ -211,3 +226,4 @@ int wp_parse_proc_net_line(const char *line, int ipv6, int *port, char *addr, si
     *state = (int)st;
     return 1;
 }
+#endif
