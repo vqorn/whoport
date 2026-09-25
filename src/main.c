@@ -220,7 +220,9 @@ static void print_table(const listener_list *list, time_t now, int all) {
         project_of(l, proj, sizeof proj);
         command_of(l, cmd, sizeof cmd);
 
-        int is_stale = secs >= LONG_RUNNING && home && strncmp(l->cwd, home, strlen(home)) == 0;
+        /* Only your own projects can be "forgotten", not system services. */
+        int in_home = l->container[0] ? proj[0] == '~' : home && strncmp(l->cwd, home, strlen(home)) == 0;
+        int is_stale = secs >= LONG_RUNNING && in_home;
         if (is_stale) {
             stale++;
             stale_port = l->port;
@@ -433,7 +435,9 @@ int main(int argc, char **argv) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
-                l->started = containers[k].created > 0 ? containers[k].created : -1;
+                l->started = containers[k].started > 0   ? containers[k].started
+                             : containers[k].created > 0 ? containers[k].created
+                                                         : -1;
                 l->rss = -1;
                 matched = 1;
             }
@@ -447,7 +451,9 @@ int main(int argc, char **argv) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
-                l->started = containers[k].created > 0 ? containers[k].created : -1;
+                l->started = containers[k].started > 0   ? containers[k].started
+                             : containers[k].created > 0 ? containers[k].created
+                                                         : -1;
                 l->rss = -1;
             }
         }

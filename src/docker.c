@@ -543,6 +543,8 @@ static void debug_dump(const char *buf, size_t len) {
     debug_dump_raw(buf, len < 600 ? len : 600);
 }
 
+static void fill_started(wp_container *list, size_t n);
+
 int wp_docker_containers(wp_container **out, size_t *count) {
     *out = NULL;
     *count = 0;
@@ -566,19 +568,86 @@ int wp_docker_containers(wp_container **out, size_t *count) {
         fprintf(stderr, "whoport debug: docker status %d, parse %s, %zu published ports\n", status, r == 0 ? "ok" : "failed",
                 *count);
     free(resp);
+    if (r == 0) fill_started(*out, *count);
     return r;
 }
 
 /* Stops a container by name. Returns 0 when it stopped or was not running. */
+/* Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm), so we
+ * need neither timegm nor _mkgmtime. */
+static long long days_from_civil(long long y, unsigned m, unsigned d) {
+    y -= m <= 2;
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);
+    unsigned doy = (153 * (m + (m > 2 ? (unsigned)-3 : 9)) + 2) / 5 + d - 1;
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + (long long)doe - 719468;
+}
+
+long long wp_parse_rfc3339(const char *s) {
+    int y, mo, d, h, mi, sec, n = 0;
+    if (sscanf(s, "%4d-%2d-%2dT%2d:%2d:%2d%n", &y, &mo, &d, &h, &mi, &sec, &n) != 6 || n != 19) return -1;
+    if (y < 1971 || mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 60) return -1;
+    const char *p = s + 19;
+    if (*p == '.')
+        for (p++; *p >= '0' && *p <= '9'; p++) {}
+    long long offset = 0;
+    if (*p == '+' || *p == '-') {
+        int oh, om;
+        if (sscanf(p + 1, "%2d:%2d", &oh, &om) != 2) return -1;
+        offset = (*p == '+' ? 1 : -1) * (oh * 3600LL + om * 60LL);
+    } else if (*p != 'Z') {
+        return -1;
+    }
+    return days_from_civil(y, (unsigned)mo, (unsigned)d) * 86400 + h * 3600LL + mi * 60LL + sec - offset;
+}
+
+long long wp_docker_started_at(const char *json) {
+    const char *k = strstr(json, "\"StartedAt\"");
+    if (!k) return -1;
+    k += 11;
+    while (*k == ' ' || *k == ':') k++;
+    if (*k != '"') return -1;
+    return wp_parse_rfc3339(k + 1); /* "0001-01-01T00:00:00Z" (never started) is rejected */
+}
+
+static int safe_name(const char *name) {
+    if (!name[0]) return 0;
+    for (const char *c = name; *c; c++)
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || strchr("_.-", *c)))
+            return 0;
+    return 1;
+}
+
+/* The list only has the creation time; a container restarted after a reboot
+ * would look days old. Ask each container for its real start time. */
+static void fill_started(wp_container *list, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        if (i > 0 && !strcmp(list[i].name, list[i - 1].name)) {
+            list[i].started = list[i - 1].started;
+            continue;
+        }
+        if (!safe_name(list[i].name)) continue;
+        char request[256], *resp, *body;
+        size_t len, body_len;
+        snprintf(request, sizeof request, "GET /containers/%s/json HTTP/1.0\r\nHost: docker\r\n\r\n", list[i].name);
+        if (docker_request(request, &resp, &len) != 0) continue;
+        if (wp_http_parse(resp, len, &body, &body_len) == 200) {
+            body[body_len] = '\0';
+            long long t = wp_docker_started_at(body);
+            if (t > 0) list[i].started = t;
+        }
+        free(resp);
+    }
+}
+
 int wp_docker_stop(const char *name, char *err, size_t err_size) {
     char request[512];
     char *resp;
     size_t len;
-    for (const char *c = name; *c; c++) {
-        if (!((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || strchr("_.-", *c))) {
-            snprintf(err, err_size, "unexpected container name");
-            return -1;
-        }
+    if (!safe_name(name)) {
+        snprintf(err, err_size, "unexpected container name");
+        return -1;
     }
     snprintf(request, sizeof request,
              "POST /containers/%s/stop?t=10 HTTP/1.0\r\nHost: docker\r\nContent-Length: 0\r\n\r\n", name);
