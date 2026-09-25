@@ -1,0 +1,38 @@
+name: Release
+
+# Push a tag like v1.0.0 to build binaries and attach them to a GitHub release.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: ubuntu-22.04-arm
+            target: linux-arm64
+          - os: macos-latest
+            target: macos-universal
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${{ matrix.target }}" = "macos-universal" ]; then
+            make VERSION="$VERSION" CFLAGS="-O2 -arch arm64 -arch x86_64"
+          else
+            make VERSION="$VERSION"
+          fi
+          make VERSION="$VERSION" test
+          ./whoport --version
+          tar czf "whoport-${{ matrix.target }}.tar.gz" whoport README.md LICENSE
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: whoport-${{ matrix.target }}.tar.gz

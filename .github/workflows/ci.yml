@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        cc: [gcc, clang]
+        exclude:
+          - os: macos-latest
+            cc: gcc   # gcc is an alias for clang on macOS
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build without warnings
+        run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Werror"
+      - name: Unit and integration tests
+        run: make CC=${{ matrix.cc }} test
