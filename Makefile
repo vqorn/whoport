@@ -1,6 +1,6 @@
 # whoport: make, make test, sudo make install
 # Cross-compile for Windows from Linux: make CC=x86_64-w64-mingw32-gcc OS=Windows_NT
-VERSION ?= 1.2.2
+VERSION ?= 1.2.3
 PREFIX ?= /usr/local
 CC ?= cc
 CFLAGS ?= -O2
