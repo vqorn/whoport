@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/proc_info.h>
+#include <sys/socket.h>
 #include <sys/sysctl.h>
 
 /* KERN_PROCARGS2 layout: int argc, exec path, NUL padding, argv[0..argc-1], env... */
@@ -113,12 +114,15 @@ int wp_collect(listener_list *out) {
                 continue;
             }
             if (si.psi.soi_kind != SOCKINFO_TCP) continue;
-            DBG("pid %d fd %d: tcp family %d state %d lport %d (in lport %d)\n", pid, fds[f].proc_fd,
-                si.psi.soi_family, si.psi.soi_proto.pri_tcp.tcpsi_state,
-                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport),
-                ntohs((uint16_t)si.psi.soi_proto.pri_in.insi_lport));
+            DBG("pid %d fd %d: tcp family %d state %d options 0x%x lport %d\n", pid, fds[f].proc_fd,
+                si.psi.soi_family, si.psi.soi_proto.pri_tcp.tcpsi_state, (unsigned)si.psi.soi_options,
+                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport));
             tcp++;
-            if (si.psi.soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
+            /* The TCP state of a listening socket can read TSI_S_CLOSED on current
+             * macOS; SO_ACCEPTCONN on the socket is the reliable signal. */
+            int listening = si.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN ||
+                            (si.psi.soi_options & SO_ACCEPTCONN);
+            if (!listening) continue;
             add_socket(out, pid, &si);
         }
         free(fds);
