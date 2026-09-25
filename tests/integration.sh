@@ -10,8 +10,11 @@ PROJECT="$WORK/demo-shop"
 SERVER_PID=""
 
 cleanup() {
-    [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
-    rm -rf "$WORK"
+    if [ -n "$SERVER_PID" ]; then
+        kill "$SERVER_PID" 2>/dev/null || true
+        sleep 0.5 # Windows keeps the folder locked until the process is gone
+    fi
+    rm -rf "$WORK" 2>/dev/null || true
 }
 trap cleanup EXIT
 

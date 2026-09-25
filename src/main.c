@@ -56,7 +56,7 @@ static void project_of(const listener_t *l, char *out, size_t size) {
         snprintf(out, size, "?");
         return;
     }
-    if (!l->cwd[0] || strcmp(l->cwd, "/") == 0) {
+    if (wp_is_system_dir(l->cwd)) {
         snprintf(out, size, "(system)");
         return;
     }
@@ -75,7 +75,7 @@ static void fit(const char *in, int width, char *out, size_t size) {
         snprintf(out, size, "%s", in);
     } else if (width > 3) {
         /* Keep the end of paths, the start of commands: both read better that way. */
-        if (in[0] == '~' || in[0] == '/') snprintf(out, size, "...%s", in + len - (width - 3));
+        if (wp_is_path(in)) snprintf(out, size, "...%s", in + len - (width - 3));
         else snprintf(out, size, "%.*s...", width - 3, in);
     } else {
         snprintf(out, size, "%.*s", width, in);

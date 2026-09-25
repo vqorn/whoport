@@ -58,5 +58,7 @@ int wp_parse_proc_net_line(const char *line, int ipv6, int *port, char *addr, si
                            unsigned long *inode, int *state);
 #endif
 int wp_is_loopback(const char *addr);
+int wp_is_path(const char *s);
+int wp_is_system_dir(const char *dir);
 
 #endif

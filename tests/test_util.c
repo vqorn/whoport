@@ -84,6 +84,20 @@ static void test_paths(void) {
     CHECK_STR(tiny, "postg");
 }
 
+static void test_system_dirs(void) {
+    CHECK_INT(wp_is_system_dir(""), 1);
+    CHECK_INT(wp_is_system_dir("/"), 1);
+    CHECK_INT(wp_is_system_dir("C:/"), 1);
+    CHECK_INT(wp_is_system_dir("C:/Windows/system32"), 1);
+    CHECK_INT(wp_is_system_dir("c:/windows"), 1);
+    CHECK_INT(wp_is_system_dir("C:/WindowsApps"), 0);
+    CHECK_INT(wp_is_system_dir("D:/code/shop"), 0);
+    CHECK_INT(wp_is_system_dir("/home/ana/shop"), 0);
+    CHECK_INT(wp_is_path("~/code"), 1);
+    CHECK_INT(wp_is_path("D:/a/b"), 1);
+    CHECK_INT(wp_is_path("node server.js"), 0);
+}
+
 static void test_project_root(void) {
 #ifdef _WIN32
     char base[512];
@@ -193,6 +207,7 @@ static void test_dedupe(void) {
 int main(void) {
     test_format();
     test_paths();
+    test_system_dirs();
     test_project_root();
     test_parse();
     test_dedupe();

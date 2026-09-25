@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 /* Copy with truncation. Long command lines and names are cut on purpose. */
@@ -40,6 +41,23 @@ void wp_list_free(listener_list *list) {
     free(list->items);
     list->items = NULL;
     list->len = list->cap = 0;
+}
+
+/* "/usr", "~/code", "C:/code" */
+int wp_is_path(const char *s) {
+    if (s[0] == '/' || s[0] == '~') return 1;
+    return ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && s[2] == '/';
+}
+
+/* Folders that belong to the operating system, not to a project. */
+int wp_is_system_dir(const char *dir) {
+    if (!dir[0] || strcmp(dir, "/") == 0) return 1;
+    if (wp_is_path(dir) && dir[1] == ':' && dir[3] == '\0') return 1; /* "C:/" */
+    if (dir[1] == ':' && dir[2] == '/') {
+        const char *rest = dir + 3;
+        if (strncasecmp(rest, "Windows", 7) == 0 && (rest[7] == '/' || rest[7] == '\0')) return 1;
+    }
+    return 0;
 }
 
 static int is_wildcard(const char *addr) {
