@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
-<img src="docs/demo.png" alt="whoport listing ports with their project folders" width="760">
+<img src="docs/demo.gif" alt="node fails with EADDRINUSE, whoport shows which project holds port 3000, stops it, and the server starts" width="760">
 
 </div>
 
@@ -24,22 +24,34 @@ You know the drill: `lsof -i :3000`, squint at a PID, `ps`, hunt for the termina
 - 🐳 **Knows your Docker containers**: shows the container name and its Compose project folder instead of `com.docker.backend`
 - 🔪 **`whoport 3000 --kill`** stops it politely (SIGTERM), waits, and confirms the port is free. For a container, it stops the container, not Docker
 - 🧹 **No noise**: operating system services are hidden (`--all` shows them)
+- 🔎 **`whoport --free`** prints the next free port, e.g. `PORT=$(whoport --free 3000) npm run dev`
 - 🧾 **`--json`** for scripts, and exit codes you can use in `if` statements
 - ⚡ A single small C binary. No dependencies, no runtime, starts instantly
 - 🐧 Linux, 🍎 macOS and 🪟 Windows
 
 ## Install
 
-**Linux and macOS**
+**macOS and Linux** with [Homebrew](https://brew.sh)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/vqorn/whoport/main/install.sh | sh
+brew tap vqorn/whoport https://github.com/vqorn/whoport
+brew install whoport
 ```
 
-**Windows** (PowerShell)
+**Windows** with [Scoop](https://scoop.sh)
 
 ```powershell
-irm https://raw.githubusercontent.com/vqorn/whoport/main/install.ps1 | iex
+scoop bucket add vqorn https://github.com/vqorn/whoport
+scoop install whoport
+```
+
+**Without a package manager**
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/vqorn/whoport/main/install.sh | sh     # Linux, macOS
+```
+```powershell
+irm https://raw.githubusercontent.com/vqorn/whoport/main/install.ps1 | iex          # Windows PowerShell
 ```
 
 Or grab a binary from [Releases](https://github.com/vqorn/whoport/releases), or build it yourself with any C compiler:
@@ -57,6 +69,7 @@ whoport 3000            # who is on port 3000?
 whoport 3000 5173       # several at once (":3000" works too)
 whoport 3000 --kill     # stop it
 whoport 3000 --kill --force
+whoport --free          # first free port from 3000 (or: whoport --free 8080)
 whoport --all           # include operating system services
 whoport --json          # machine-readable
 ```
@@ -94,6 +107,7 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 
 ```sh
 whoport 5432 >/dev/null || docker compose up -d db
+PORT=$(whoport --free 3000) npm run dev
 ```
 
 ## How it works

@@ -52,6 +52,7 @@ int wp_is_alive(int pid);
 int wp_terminate(int pid, int force, char *err, size_t err_size); /* 0 when the signal was sent */
 void wp_sleep_ms(int ms);
 void wp_localtime(long long t, struct tm *out);
+int wp_port_bindable(int port); /* 1 if a TCP listener could bind this port right now */
 
 /* docker.c */
 int wp_docker_containers(wp_container **out, size_t *count); /* -1 when Docker is not reachable */

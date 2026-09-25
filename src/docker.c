@@ -339,19 +339,35 @@ static int response_complete(char *buf, size_t len) {
 }
 
 #ifdef _WIN32
-static int docker_request(const char *request, char **resp, size_t *resp_len) {
-    const char *pipe = "\\\\.\\pipe\\docker_engine";
-    const char *host = getenv("DOCKER_HOST");
-    char custom[256];
-    if (host && strncmp(host, "npipe://", 8) == 0) {
-        wp_copy(custom, sizeof custom, host + 8);
-        for (char *c = custom; *c; c++)
-            if (*c == '/') *c = '\\';
-        pipe = custom;
-    }
+static HANDLE open_pipe(const char *pipe) {
     HANDLE h = CreateFileA(pipe, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
     if (h == INVALID_HANDLE_VALUE && GetLastError() == ERROR_PIPE_BUSY && WaitNamedPipeA(pipe, 500))
         h = CreateFileA(pipe, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    if (getenv("WHOPORT_DEBUG"))
+        fprintf(stderr, "whoport debug: docker pipe %s: %s (error %lu)\n", pipe,
+                h == INVALID_HANDLE_VALUE ? "failed" : "connected",
+                h == INVALID_HANDLE_VALUE ? (unsigned long)GetLastError() : 0UL);
+    return h;
+}
+
+static int docker_request(const char *request, char **resp, size_t *resp_len) {
+    /* DOCKER_HOST first, then Docker Desktop's Linux engine (current default),
+     * the classic engine pipe, and the older Linux engine name. */
+    char pipes[4][256];
+    int n = 0;
+    const char *host = getenv("DOCKER_HOST");
+    if (host && strncmp(host, "npipe://", 8) == 0) {
+        wp_copy(pipes[n], sizeof pipes[n], host + 8);
+        for (char *c = pipes[n]; *c; c++)
+            if (*c == '/') *c = '\\';
+        n++;
+    }
+    wp_copy(pipes[n++], sizeof pipes[0], "\\\\.\\pipe\\dockerDesktopLinuxEngine");
+    wp_copy(pipes[n++], sizeof pipes[0], "\\\\.\\pipe\\docker_engine");
+    wp_copy(pipes[n++], sizeof pipes[0], "\\\\.\\pipe\\docker_engine_linux");
+
+    HANDLE h = INVALID_HANDLE_VALUE;
+    for (int i = 0; i < n && h == INVALID_HANDLE_VALUE; i++) h = open_pipe(pipes[i]);
     if (h == INVALID_HANDLE_VALUE) return -1;
     DWORD written;
     if (!WriteFile(h, request, (DWORD)strlen(request), &written, NULL)) {
@@ -376,6 +392,7 @@ static int docker_request(const char *request, char **resp, size_t *resp_len) {
     CloseHandle(h);
     if (!buf) return -1;
     buf[len] = '\0';
+    if (getenv("WHOPORT_DEBUG")) fprintf(stderr, "whoport debug: docker answered %zu bytes\n", len);
     *resp = buf;
     *resp_len = len;
     return 0;
@@ -421,7 +438,11 @@ static int docker_request(const char *request, char **resp, size_t *resp_len) {
     if (xdg) snprintf(paths[n++], WP_PATH_MAX, "%s/docker.sock", xdg);
 
     int fd = -1;
-    for (int i = 0; i < n && fd < 0; i++) fd = connect_unix(paths[i]);
+    for (int i = 0; i < n && fd < 0; i++) {
+        fd = connect_unix(paths[i]);
+        if (getenv("WHOPORT_DEBUG"))
+            fprintf(stderr, "whoport debug: docker socket %s: %s\n", paths[i], fd < 0 ? "failed" : "connected");
+    }
     if (fd < 0) return -1;
 
     size_t sent = 0, want = strlen(request);
@@ -468,6 +489,9 @@ int wp_docker_containers(wp_container **out, size_t *count) {
     size_t body_len;
     int status = wp_http_parse(resp, len, &body, &body_len);
     int r = status == 200 ? wp_docker_parse(body, body_len, out, count) : -1;
+    if (getenv("WHOPORT_DEBUG"))
+        fprintf(stderr, "whoport debug: docker status %d, parse %s, %zu published ports\n", status, r == 0 ? "ok" : "failed",
+                *count);
     free(resp);
     return r;
 }
