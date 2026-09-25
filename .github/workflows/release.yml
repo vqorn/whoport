@@ -1,9 +1,20 @@
 name: Release
 
-# Push a tag like v1.0.0 to build binaries and attach them to a GitHub release.
+# Builds binaries and attaches them to a GitHub release. Either push a tag
+# like v1.0.0, or run it by hand (Actions > Release > Run workflow) with a
+# version number; the tag and release are then created automatically.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version without the v, e.g. 1.0.0'
+        required: true
+
+env:
+  # "v1.0.0" from a pushed tag, or "v" + the version typed in by hand
+  TAG: ${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
 
 permissions:
   contents: write
@@ -24,7 +35,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Build
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           if [ "${{ matrix.target }}" = "macos-universal" ]; then
             make VERSION="$VERSION" CFLAGS="-O2 -arch arm64 -arch x86_64"
           else
@@ -35,6 +46,9 @@ jobs:
           tar czf "whoport-${{ matrix.target }}.tar.gz" whoport README.md LICENSE
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          name: whoport ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           files: whoport-${{ matrix.target }}.tar.gz
 
   windows:
@@ -54,7 +68,7 @@ jobs:
           install: make zip mingw-w64-ucrt-x86_64-gcc
       - name: Build
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          VERSION="${TAG#v}"
           # Static runtime: the .exe runs on any Windows 10/11 without extra DLLs.
           make VERSION="$VERSION" LDFLAGS="-static"
           make VERSION="$VERSION" LDFLAGS="-static" test
@@ -62,4 +76,7 @@ jobs:
           zip whoport-windows-x86_64.zip whoport.exe README.md LICENSE
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          name: whoport ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
           files: whoport-windows-x86_64.zip
