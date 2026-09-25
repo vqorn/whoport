@@ -193,9 +193,9 @@ static void fill_process(listener_t *l) {
     HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ, FALSE, pid);
     if (!h) h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!h) {
-        snprintf(l->command, sizeof l->command, "%s (details need an administrator terminal)",
-                 l->name[0] ? l->name : "?");
         strip_exe(l->name);
+        wp_copy(l->command, sizeof l->command, l->name[0] ? l->name : "?");
+        l->restricted = 1;
         return;
     }
 

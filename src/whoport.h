@@ -21,7 +21,19 @@ typedef struct {
     char cwd[WP_PATH_MAX];     /* working directory of the process */
     long long started;         /* start time, seconds since the epoch, -1 if unknown */
     long long rss;             /* resident memory in bytes, -1 if unknown */
+    int restricted;            /* process visible, but details need admin rights */
+    char container[128];       /* Docker container publishing this port */
+    char image[128];
+    char compose_dir[WP_PATH_MAX]; /* Compose project folder of that container */
 } listener_t;
+
+typedef struct {
+    int port;                  /* published TCP port on the host */
+    char name[128];
+    char image[128];
+    char workdir[WP_PATH_MAX]; /* com.docker.compose.project.working_dir */
+    char service[128];         /* com.docker.compose.service */
+} wp_container;
 
 typedef struct {
     listener_t *items;
@@ -40,6 +52,12 @@ int wp_is_alive(int pid);
 int wp_terminate(int pid, int force, char *err, size_t err_size); /* 0 when the signal was sent */
 void wp_sleep_ms(int ms);
 void wp_localtime(long long t, struct tm *out);
+
+/* docker.c */
+int wp_docker_containers(wp_container **out, size_t *count); /* -1 when Docker is not reachable */
+int wp_docker_stop(const char *name, char *err, size_t err_size);
+int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *count);
+int wp_http_parse(char *resp, size_t len, char **body, size_t *body_len);
 
 /* util.c */
 void wp_copy(char *dst, size_t size, const char *src);
@@ -60,5 +78,6 @@ int wp_parse_proc_net_line(const char *line, int ipv6, int *port, char *addr, si
 int wp_is_loopback(const char *addr);
 int wp_is_path(const char *s);
 int wp_is_system_dir(const char *dir);
+int wp_is_os_noise(const listener_t *l);
 
 #endif

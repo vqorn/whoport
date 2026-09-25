@@ -60,6 +60,25 @@ int wp_is_system_dir(const char *dir) {
     return 0;
 }
 
+/* Operating system services that listen on ports but are never what you are
+ * looking for. Hidden unless --all. */
+static const char *const NOISE[] = {
+    /* Windows */
+    "System", "svchost", "lsass", "wininit", "services", "spoolsv", "csrss", "smss",
+    /* macOS */
+    "launchd", "rapportd", "ControlCenter", "sharingd", "remoted", "mDNSResponder",
+    /* Linux */
+    "systemd", "systemd-resolved", "systemd-resolve", "rpcbind", "avahi-daemon", "cupsd", "dnsmasq",
+    NULL,
+};
+
+int wp_is_os_noise(const listener_t *l) {
+    if (l->container[0]) return 0;
+    for (int i = 0; NOISE[i]; i++)
+        if (strcasecmp(l->name, NOISE[i]) == 0) return 1;
+    return 0;
+}
+
 static int is_wildcard(const char *addr) {
     return strcmp(addr, "0.0.0.0") == 0 || strcmp(addr, "::") == 0 || strcmp(addr, "*") == 0;
 }

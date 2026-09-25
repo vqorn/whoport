@@ -38,12 +38,14 @@ static void usage(FILE *f) {
             "Options\n"
             "  -k, --kill      stop the process (SIGTERM, then waits up to 3 seconds)\n"
             "  -f, --force     with --kill: use SIGKILL if it does not stop in time\n"
+            "  -a, --all       also show operating system services and other users' ports\n"
             "  -j, --json      machine-readable output\n"
             "      --color     force colours, e.g. when piping into less -R\n"
             "      --no-color  disable colours (also: NO_COLOR=1)\n"
             "  -h, --help      show this help\n"
             "  -v, --version   show the version\n"
             "\n"
+            "Docker containers are shown by name; --kill stops the container.\n"
             "Exit status: 0 if a queried port is in use, 1 if it is free, 2 on errors.\n"
             "Processes of other users are only visible with sudo (Linux, macOS)\n"
             "or from an administrator terminal (Windows).\n",
@@ -52,6 +54,11 @@ static void usage(FILE *f) {
 
 /* Project folder of a listener, shortened for display. */
 static void project_of(const listener_t *l, char *out, size_t size) {
+    if (l->container[0]) {
+        if (l->compose_dir[0]) wp_shorten_home(l->compose_dir, home, out, size);
+        else snprintf(out, size, "(docker)");
+        return;
+    }
     if (l->pid < 0) {
         snprintf(out, size, "?");
         return;
@@ -63,6 +70,19 @@ static void project_of(const listener_t *l, char *out, size_t size) {
     char root[WP_PATH_MAX];
     wp_find_project_root(l->cwd, home, root, sizeof root);
     wp_shorten_home(root, home, out, size);
+}
+
+/* What to show in the COMMAND column. */
+static void command_of(const listener_t *l, char *out, size_t size) {
+    if (l->container[0]) {
+        snprintf(out, size, "container %s (%s)", l->container, l->image);
+        return;
+    }
+    wp_short_command(l->command, home, out, size);
+    if (l->restricted) {
+        size_t n = strlen(out);
+        if (n + 2 < size) memcpy(out + n, " *", 3);
+    }
 }
 
 static long long uptime_of(const listener_t *l, time_t now) {
@@ -104,11 +124,12 @@ static void print_json(const listener_list *list, time_t now) {
         else project[0] = '\0';
         printf("%s\n  {\"port\": %d, \"address\": ", i ? "," : "", l->port);
         json_string(l->addr);
-        if (l->pid < 0) {
+        if (l->pid < 0 && !l->container[0]) {
             printf(", \"pid\": null}");
             continue;
         }
-        printf(", \"pid\": %d, \"name\": ", l->pid);
+        if (l->pid >= 0) printf(", \"pid\": %d, \"name\": ", l->pid);
+        else printf(", \"pid\": null, \"name\": ");
         json_string(l->name);
         printf(", \"command\": ");
         json_string(l->command);
@@ -116,21 +137,51 @@ static void print_json(const listener_list *list, time_t now) {
         json_string(l->cwd);
         printf(", \"project\": ");
         json_string(project);
-        printf(", \"uptime_seconds\": %lld, \"memory_bytes\": %lld}", uptime_of(l, now), l->rss);
+        printf(", \"uptime_seconds\": %lld, \"memory_bytes\": %lld, \"restricted\": %s, \"container\": ",
+               uptime_of(l, now), l->rss, l->restricted ? "true" : "false");
+        if (l->container[0]) {
+            printf("{\"name\": ");
+            json_string(l->container);
+            printf(", \"image\": ");
+            json_string(l->image);
+            printf(", \"compose_dir\": ");
+            json_string(l->compose_dir);
+            printf("}}");
+        } else {
+            printf("null}");
+        }
     }
     printf("%s]\n", list->len ? "\n" : "");
 }
 
-static void print_table(const listener_list *list, time_t now) {
-    if (!list->len) {
-        printf("No listening ports found.\n");
+static int shown(const listener_t *l, int all) {
+    return all || l->container[0] || (l->pid >= 0 && !wp_is_os_noise(l));
+}
+
+static void print_table(const listener_list *list, time_t now, int all) {
+    int visible = 0, noise = 0, others = 0, restricted = 0;
+    for (size_t i = 0; i < list->len; i++) {
+        const listener_t *l = &list->items[i];
+        if (shown(l, all)) {
+            visible++;
+            restricted += l->restricted;
+        } else if (l->pid < 0) {
+            others++;
+        } else {
+            noise++;
+        }
+    }
+    if (!visible) {
+        printf("\n  No listening ports found%s.\n", noise + others ? " besides system services (see --all)" : "");
+        printf("\n");
         return;
     }
     int w_proj = 7, w_cmd = 7;
     char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX];
     for (size_t i = 0; i < list->len; i++) {
+        if (!shown(&list->items[i], all)) continue;
         project_of(&list->items[i], proj, sizeof proj);
-        wp_short_command(list->items[i].command, home, cmd, sizeof cmd);
+        command_of(&list->items[i], cmd, sizeof cmd);
         if ((int)strlen(proj) > w_proj) w_proj = (int)strlen(proj);
         if ((int)strlen(cmd) > w_cmd) w_cmd = (int)strlen(cmd);
     }
@@ -139,11 +190,11 @@ static void print_table(const listener_list *list, time_t now) {
 
     printf("\n  %s%-6s %-*s  %-*s  %7s  %9s  %8s%s\n", DIM, "PORT", w_proj, "PROJECT", w_cmd, "COMMAND", "PID",
            "RUNNING", "MEMORY", RESET);
-    int hidden = 0, stale = 0, stale_port = 0;
+    int stale = 0, stale_port = 0;
     for (size_t i = 0; i < list->len; i++) {
         const listener_t *l = &list->items[i];
-        if (l->pid < 0) {
-            hidden++;
+        if (!shown(l, all)) continue;
+        if (l->pid < 0 && !l->container[0]) {
             printf("  %s%-6d%s %s%-*s  %s%s\n", BOLD, l->port, RESET, DIM, w_proj, "?", "(another user, try sudo)",
                    RESET);
             continue;
@@ -152,9 +203,10 @@ static void print_table(const listener_list *list, time_t now) {
         long long secs = uptime_of(l, now);
         wp_format_duration(secs, up, sizeof up);
         wp_format_bytes(l->rss, mem, sizeof mem);
-        snprintf(pid, sizeof pid, "%d", l->pid);
+        if (l->pid >= 0) snprintf(pid, sizeof pid, "%d", l->pid);
+        else snprintf(pid, sizeof pid, "-");
         project_of(l, proj, sizeof proj);
-        wp_short_command(l->command, home, cmd, sizeof cmd);
+        command_of(l, cmd, sizeof cmd);
 
         int is_stale = secs >= LONG_RUNNING && home && strncmp(l->cwd, home, strlen(home)) == 0;
         if (is_stale) {
@@ -163,7 +215,7 @@ static void print_table(const listener_list *list, time_t now) {
         }
         printf("  %s%-6d%s ", BOLD, l->port, RESET);
         fit(proj, w_proj, cell, sizeof cell);
-        printf("%s%-*s%s  ", CYAN, w_proj, cell, RESET);
+        printf("%s%-*s%s  ", l->container[0] ? "" : CYAN, w_proj, cell, RESET);
         fit(cmd, w_cmd, cell, sizeof cell);
         printf("%-*s  %s%7s%s  %s%9s%s  %8s", w_cmd, cell, DIM, pid, RESET, is_stale ? YELLOW : "", up, RESET, mem);
         if (is_stale) printf("  %s<- forgotten?%s", YELLOW, RESET);
@@ -172,13 +224,27 @@ static void print_table(const listener_list *list, time_t now) {
     printf("\n");
     if (stale == 1) printf("  %sRunning for more than a day. Stop it with: whoport %d --kill%s\n\n", DIM, stale_port, RESET);
     else if (stale > 1) printf("  %s%d servers have been running for more than a day.%s\n\n", DIM, stale, RESET);
-    if (hidden) printf("  %s%d port%s owned by other users. Run with sudo to see them.%s\n\n", DIM, hidden,
-                       hidden == 1 ? " is" : "s are", RESET);
+    if (restricted)
+        printf("  %s* Folder, uptime and memory need %s.%s\n", DIM,
+#ifdef _WIN32
+               "an administrator terminal",
+#else
+               "sudo",
+#endif
+               RESET);
+    if (noise || others) {
+        printf("  %sHidden:", DIM);
+        if (noise) printf(" %d system service%s", noise, noise == 1 ? "" : "s");
+        if (noise && others) printf(",");
+        if (others) printf(" %d port%s of other users", others, others == 1 ? "" : "s");
+        printf(". Show them with: whoport --all%s\n", RESET);
+    }
+    if (restricted || noise || others) printf("\n");
 }
 
 static void print_detail(const listener_t *l, time_t now) {
     char project[WP_PATH_MAX], up[32], mem[32], when[32];
-    if (l->pid < 0) {
+    if (l->pid < 0 && !l->container[0]) {
         printf("\n  %sPort %d%s is in use by a process of another user.\n  Run %ssudo whoport %d%s to see it.\n\n",
                BOLD, l->port, RESET, BOLD, l->port, RESET);
         return;
@@ -193,12 +259,25 @@ static void print_detail(const listener_t *l, time_t now) {
         wp_localtime(l->started, &tm);
         strftime(when, sizeof when, now - t < 86400 ? "since %H:%M" : "since %b %d, %H:%M", &tm);
     }
+    if (l->container[0]) {
+        printf("\n  %sPort %d%s is published by Docker container %s%s%s\n\n", BOLD, l->port, RESET, BOLD, l->container,
+               RESET);
+        printf("  %-9s %s\n", "Image", l->image);
+        if (l->compose_dir[0]) printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
+        printf("  %-9s %s\n", "Address", l->addr);
+        printf("\n  %sStop it: whoport %d --kill   (stops the container)%s\n\n", DIM, l->port, RESET);
+        return;
+    }
     printf("\n  %sPort %d%s is used by %s%s%s %s(pid %d)%s\n\n", BOLD, l->port, RESET, BOLD, l->name, RESET, DIM,
            l->pid, RESET);
     printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
     printf("  %-9s %s\n", "Command", l->command);
-    printf("  %-9s %s %s%s%s\n", "Running", up, DIM, when, RESET);
-    printf("  %-9s %s\n", "Memory", mem);
+    if (l->restricted) {
+        printf("  %-9s %s(run as administrator to see uptime, memory and folder)%s\n", "Details", DIM, RESET);
+    } else {
+        printf("  %-9s %s %s%s%s\n", "Running", up, DIM, when, RESET);
+        printf("  %-9s %s\n", "Memory", mem);
+    }
     printf("  %-9s %s %s%s%s\n", "Address", l->addr, DIM,
            wp_is_loopback(l->addr) ? "(only this computer)" : "(reachable from your network)", RESET);
     printf("\n  %sStop it: whoport %d --kill%s\n\n", DIM, l->port, RESET);
@@ -213,6 +292,16 @@ static int wait_for_exit(int pid, int ms) {
 }
 
 static int stop(const listener_t *l, int force) {
+    if (l->container[0]) {
+        char err[256] = "";
+        if (wp_docker_stop(l->container, err, sizeof err) != 0) {
+            fprintf(stderr, "  %sCould not stop container %s: %s%s\n", RED, l->container, err, RESET);
+            return 2;
+        }
+        printf("  %s✓%s Stopped container %s%s%s. Port %d is free now.\n", GREEN, RESET, BOLD, l->container, RESET,
+               l->port);
+        return 0;
+    }
     if (l->pid < 0) {
         fprintf(stderr, "  %sPort %d belongs to another user. Try: sudo whoport %d --kill%s\n", RED, l->port,
                 l->port, RESET);
@@ -245,7 +334,7 @@ static int stop(const listener_t *l, int force) {
 
 int main(int argc, char **argv) {
     int ports[MAX_QUERY], nports = 0;
-    int do_kill = 0, force = 0, json = 0;
+    int do_kill = 0, force = 0, json = 0, all = 0;
     wp_platform_init();
     color = wp_stdout_is_tty() && !getenv("NO_COLOR");
 
@@ -261,6 +350,8 @@ int main(int argc, char **argv) {
             do_kill = 1;
         } else if (!strcmp(a, "-f") || !strcmp(a, "--force")) {
             force = 1;
+        } else if (!strcmp(a, "-a") || !strcmp(a, "--all")) {
+            all = 1;
         } else if (!strcmp(a, "-j") || !strcmp(a, "--json")) {
             json = 1;
         } else if (!strcmp(a, "--no-color")) {
@@ -291,9 +382,40 @@ int main(int argc, char **argv) {
     }
     time_t now = time(NULL);
 
+    /* Ports published by Docker belong to a container, not to the Docker
+     * daemon or proxy process that holds the socket. */
+    wp_container *containers = NULL;
+    size_t n_containers = 0;
+    if (wp_docker_containers(&containers, &n_containers) == 0) {
+        for (size_t k = 0; k < n_containers; k++) {
+            int matched = 0;
+            for (size_t i = 0; i < list.len; i++) {
+                if (containers[k].port != list.items[i].port) continue;
+                listener_t *l = &list.items[i];
+                wp_copy(l->container, sizeof l->container, containers[k].name);
+                wp_copy(l->image, sizeof l->image, containers[k].image);
+                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                matched = 1;
+            }
+            /* Without a userland proxy Docker forwards ports in the kernel, so
+             * no process holds the socket. Show the container anyway. */
+            if (!matched) {
+                listener_t *l = wp_list_push(&list);
+                if (!l) break;
+                l->port = containers[k].port;
+                wp_copy(l->addr, sizeof l->addr, "0.0.0.0");
+                wp_copy(l->container, sizeof l->container, containers[k].name);
+                wp_copy(l->image, sizeof l->image, containers[k].image);
+                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+            }
+        }
+        free(containers);
+        wp_list_sort_dedupe(&list);
+    }
+
     if (!nports) {
         if (json) print_json(&list, now);
-        else print_table(&list, now);
+        else print_table(&list, now, all);
         wp_list_free(&list);
         return 0;
     }

@@ -204,6 +204,68 @@ static void test_dedupe(void) {
     CHECK_STR(buf, "abc");
 }
 
+static void test_docker(void) {
+    /* Trimmed real /containers/json output: a Compose service with two port
+     * bindings (IPv4 + IPv6), a plain container, and one without ports. */
+    const char *json =
+        "[{\"Id\":\"8dfafdbc3a40\",\"Names\":[\"/shop-db-1\"],\"Image\":\"postgres:16\",\"Command\":\"docker-entrypoint.sh postgres\","
+        "\"Created\":1727000000,\"Ports\":[{\"IP\":\"0.0.0.0\",\"PrivatePort\":5432,\"PublicPort\":5433,\"Type\":\"tcp\"},"
+        "{\"IP\":\"::\",\"PrivatePort\":5432,\"PublicPort\":5433,\"Type\":\"tcp\"}],"
+        "\"Labels\":{\"com.docker.compose.project\":\"shop\",\"com.docker.compose.project.working_dir\":\"/home/ana/code/shop\","
+        "\"com.docker.compose.service\":\"db\",\"note\":\"a \\\"quoted\\\" \\u00e9 value\"},\"State\":\"running\","
+        "\"HostConfig\":{\"NetworkMode\":\"shop_default\"},\"NetworkSettings\":{\"Networks\":{\"x\":{\"IPAddress\":\"172.18.0.2\"}}},"
+        "\"Mounts\":[]},"
+        "{\"Id\":\"a1\",\"Names\":[\"/redis\"],\"Image\":\"redis:7\",\"Ports\":[{\"PrivatePort\":6379,\"PublicPort\":6379,\"Type\":\"tcp\"},"
+        "{\"PrivatePort\":6379,\"PublicPort\":6379,\"Type\":\"udp\"},{\"PrivatePort\":9999,\"Type\":\"tcp\"}],\"Labels\":null},"
+        "{\"Id\":\"b2\",\"Names\":[\"/worker\"],\"Image\":\"busybox\",\"Ports\":[],\"Labels\":{}}]";
+    wp_container *c = NULL;
+    size_t n = 0;
+    CHECK_INT(wp_docker_parse(json, strlen(json), &c, &n), 0);
+    CHECK_INT(n, 2);
+    if (n == 2) {
+        CHECK_INT(c[0].port, 5433);
+        CHECK_STR(c[0].name, "shop-db-1");
+        CHECK_STR(c[0].image, "postgres:16");
+        CHECK_STR(c[0].workdir, "/home/ana/code/shop");
+        CHECK_STR(c[0].service, "db");
+        CHECK_INT(c[1].port, 6379);
+        CHECK_STR(c[1].name, "redis");
+        CHECK_STR(c[1].workdir, "");
+    }
+    free(c);
+    CHECK_INT(wp_docker_parse("[]", 2, &c, &n), 0);
+    CHECK_INT(n, 0);
+    CHECK_INT(wp_docker_parse("[{\"Names\":[\"/x\"", 15, &c, &n), -1);
+    CHECK_INT(wp_docker_parse("{\"message\":\"no\"}", 16, &c, &n), -1);
+
+    char r1[] = "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]";
+    char *body;
+    size_t blen;
+    CHECK_INT(wp_http_parse(r1, strlen(r1), &body, &blen), 200);
+    CHECK_INT(blen, 2);
+    char r2[] = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n3\r\n[{}\r\n1\r\n]\r\n0\r\n\r\n";
+    CHECK_INT(wp_http_parse(r2, strlen(r2), &body, &blen), 200);
+    CHECK_INT(blen, 4);
+    body[blen] = '\0';
+    CHECK_STR(body, "[{}]");
+    char r3[] = "HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\n[]";
+    CHECK_INT(wp_http_parse(r3, strlen(r3), &body, &blen), -1); /* incomplete */
+    char r4[] = "HTTP/1.1 204 No Content\r\n\r\n";
+    CHECK_INT(wp_http_parse(r4, strlen(r4), &body, &blen), 204);
+}
+
+static void test_noise(void) {
+    listener_t l;
+    memset(&l, 0, sizeof l);
+    wp_copy(l.name, sizeof l.name, "svchost");
+    CHECK_INT(wp_is_os_noise(&l), 1);
+    wp_copy(l.name, sizeof l.name, "node");
+    CHECK_INT(wp_is_os_noise(&l), 0);
+    wp_copy(l.name, sizeof l.name, "System");
+    wp_copy(l.container, sizeof l.container, "redis");
+    CHECK_INT(wp_is_os_noise(&l), 0); /* a container is never noise */
+}
+
 int main(void) {
     test_format();
     test_paths();
@@ -211,6 +273,8 @@ int main(void) {
     test_project_root();
     test_parse();
     test_dedupe();
+    test_docker();
+    test_noise();
     printf("%d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
 }
