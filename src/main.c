@@ -82,6 +82,15 @@ static void project_of(const listener_t *l, char *out, size_t size) {
     wp_shorten_home(root, home, out, size);
 }
 
+/* Your own code is highlighted; system services and installed apps are dimmed. */
+static int is_project(const char *proj) {
+    static const char *const apps[] = {"/AppData/", "Program Files", "/Library/", "/Applications/", "/opt/", "/snap/", NULL};
+    if (proj[0] == '(' || proj[0] == '?' || !proj[0]) return 0;
+    for (int i = 0; apps[i]; i++)
+        if (strstr(proj, apps[i])) return 0;
+    return 1;
+}
+
 /* What to show in the COMMAND column. */
 static void command_of(const listener_t *l, char *out, size_t size) {
     if (l->container[0]) {
@@ -241,7 +250,7 @@ static void print_table(const listener_list *list, time_t now, int all) {
         }
         printf("  %s%-6d%s ", BOLD, l->port, RESET);
         fit(proj, w_proj, cell, sizeof cell);
-        printf("%s%-*s%s  ", l->container[0] ? "" : CYAN, w_proj, cell, RESET);
+        printf("%s%-*s%s  ", is_project(proj) ? CYAN : DIM, w_proj, cell, RESET);
         fit(cmd, w_cmd, cell, sizeof cell);
         printf("%-*s  %s%7s%s  %s%9s%s  %8s", w_cmd, cell, DIM, pid, RESET, is_stale ? YELLOW : "", up, RESET, mem);
         if (is_stale && room_for_hint) printf("  %s<- forgotten?%s", YELLOW, RESET);
