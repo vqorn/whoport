@@ -112,10 +112,11 @@ int wp_collect(listener_list *out) {
                     (int)PROC_PIDFDSOCKETINFO_SIZE);
                 continue;
             }
-            DBG("pid %d fd %d: family %d kind %d state %d lport %d\n", pid, fds[f].proc_fd, si.psi.soi_family,
-                si.psi.soi_kind, si.psi.soi_proto.pri_tcp.tcpsi_state,
-                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport));
             if (si.psi.soi_kind != SOCKINFO_TCP) continue;
+            DBG("pid %d fd %d: tcp family %d state %d lport %d (in lport %d)\n", pid, fds[f].proc_fd,
+                si.psi.soi_family, si.psi.soi_proto.pri_tcp.tcpsi_state,
+                ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport),
+                ntohs((uint16_t)si.psi.soi_proto.pri_in.insi_lport));
             tcp++;
             if (si.psi.soi_proto.pri_tcp.tcpsi_state != TSI_S_LISTEN) continue;
             add_socket(out, pid, &si);
