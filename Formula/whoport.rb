@@ -2,22 +2,22 @@
 class Whoport < Formula
   desc "See which project is running on which port, then stop it"
   homepage "https://github.com/vqorn/whoport"
-  version "1.1.0"
+  version "1.2.0"
   license "MIT"
 
   on_macos do
-    url "https://github.com/vqorn/whoport/releases/download/v1.1.0/whoport-macos-universal.tar.gz"
-    sha256 "5108a0fdb76149e7692bc46939c82d6abe333acf65f1c6cf6810b26557181eac"
+    url "https://github.com/vqorn/whoport/releases/download/v1.2.0/whoport-macos-universal.tar.gz"
+    sha256 "b5d78b03c7a7c600afffe931f7cb4cbaf901071cc32574f743544e17a2910163"
   end
 
   on_linux do
     on_intel do
-      url "https://github.com/vqorn/whoport/releases/download/v1.1.0/whoport-linux-x86_64.tar.gz"
-      sha256 "5f3bc866811afd0d336747aea392cb2416c473640ea956f61d541d65d8dd6090"
+      url "https://github.com/vqorn/whoport/releases/download/v1.2.0/whoport-linux-x86_64.tar.gz"
+      sha256 "43de82c5a8cbe67395ce47a444f0b50b001a2013a28704f9cba780d95faacdaa"
     end
     on_arm do
-      url "https://github.com/vqorn/whoport/releases/download/v1.1.0/whoport-linux-arm64.tar.gz"
-      sha256 "e908584402ef7a15574b8fbb85982496d94eec4e1e6ffb8865c224e708965c4c"
+      url "https://github.com/vqorn/whoport/releases/download/v1.2.0/whoport-linux-arm64.tar.gz"
+      sha256 "440c5252f5597b1bd26fd3ed351a2ff27d76aac6386a52bdf66de7d59ee17aa5"
     end
   end
 
