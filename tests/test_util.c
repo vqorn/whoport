@@ -1,5 +1,6 @@
 /* Unit tests for util.c. Built with AddressSanitizer and UBSan by `make test`. */
 #define _DEFAULT_SOURCE
+#define _DARWIN_C_SOURCE /* mkdtemp on macOS */
 #include "whoport.h"
 
 #include <stdio.h>

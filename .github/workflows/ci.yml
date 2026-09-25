@@ -16,7 +16,7 @@ jobs:
             cc: gcc   # gcc is an alias for clang on macOS
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Build without warnings
         run: make CC=${{ matrix.cc }} CFLAGS="-O2 -Werror"
       - name: Unit and integration tests
