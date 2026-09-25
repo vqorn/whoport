@@ -43,13 +43,22 @@ static void usage(FILE *f) {
             "  -j, --json      machine-readable output\n"
             "      --color     force colours, e.g. when piping into less -R\n"
             "      --no-color  disable colours (also: NO_COLOR=1)\n"
-            "  -h, --help      show this help\n"
+            "  -h, --help      show this help (also: whoport help)\n"
             "  -v, --version   show the version\n"
+            "\n"
+            "Examples\n"
+            "  whoport 3000                      who is on port 3000?\n"
+            "  whoport 3000 5173                 several ports at once\n"
+            "  whoport 3000 --kill               free port 3000\n"
+            "  PORT=$(whoport --free 3000) npm run dev\n"
+            "  whoport 5432 >/dev/null || docker compose up -d db\n"
             "\n"
             "Docker containers are shown by name; --kill stops the container.\n"
             "Exit status: 0 if a queried port is in use, 1 if it is free, 2 on errors.\n"
             "Processes of other users are only visible with sudo (Linux, macOS)\n"
-            "or from an administrator terminal (Windows).\n",
+            "or from an administrator terminal (Windows).\n"
+            "Something wrong? Run with WHOPORT_DEBUG=1 and open an issue:\n"
+            "https://github.com/vqorn/whoport/issues\n",
             WHOPORT_VERSION);
 }
 
@@ -341,10 +350,10 @@ int main(int argc, char **argv) {
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
-        if (!strcmp(a, "-h") || !strcmp(a, "--help")) {
+        if (!strcmp(a, "-h") || !strcmp(a, "--help") || !strcmp(a, "help") || !strcmp(a, "-?") || !strcmp(a, "/?")) {
             usage(stdout);
             return 0;
-        } else if (!strcmp(a, "-v") || !strcmp(a, "--version")) {
+        } else if (!strcmp(a, "-v") || !strcmp(a, "--version") || !strcmp(a, "version")) {
             printf("whoport %s\n", WHOPORT_VERSION);
             return 0;
         } else if (!strcmp(a, "-k") || !strcmp(a, "--kill")) {
