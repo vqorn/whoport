@@ -120,11 +120,15 @@ int wp_collect(listener_list *out) {
                 ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport),
                 ntohs((uint16_t)si.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport));
             tcp++;
-            /* On current macOS the TCP state of a listening socket can read
-             * TSI_S_CLOSED and SO_ACCEPTCONN may be missing from soi_options.
-             * A listen backlog (soi_qlimit) is only ever set on listening sockets. */
-            int listening = si.psi.soi_proto.pri_tcp.tcpsi_state == TSI_S_LISTEN ||
-                            (si.psi.soi_options & SO_ACCEPTCONN) || si.psi.soi_qlimit > 0;
+            /* On current macOS (seen on 26) the TCP state of a listening socket can
+             * read TSI_S_CLOSED, without SO_ACCEPTCONN or a backlog reported, so
+             * lsof misses it too. A bound TCP socket with a local port but no peer
+             * is a listener in practice; connected sockets always have a peer. */
+            const struct in_sockinfo *ini = &si.psi.soi_proto.pri_tcp.tcpsi_ini;
+            int state = si.psi.soi_proto.pri_tcp.tcpsi_state;
+            int listening = state == TSI_S_LISTEN || (si.psi.soi_options & SO_ACCEPTCONN) ||
+                            si.psi.soi_qlimit > 0 ||
+                            (state == TSI_S_CLOSED && ini->insi_lport != 0 && ini->insi_fport == 0);
             if (!listening) continue;
             add_socket(out, pid, &si);
         }

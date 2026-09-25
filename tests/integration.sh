@@ -33,7 +33,7 @@ for _ in $(seq 1 50); do
 done
 if ! "$BIN" "$PORT" >/dev/null; then
     echo "--- whoport --no-color" >&2; "$BIN" --no-color >&2 || true
-    echo "--- WHOPORT_DEBUG (last 40 lines)" >&2; WHOPORT_DEBUG=1 "$BIN" --no-color 2>&1 | grep -v "kind" | tail -40 >&2 || true
+    echo "--- WHOPORT_DEBUG (last 40 lines)" >&2; WHOPORT_DEBUG=1 "$BIN" --no-color 2>&1 | grep -E "lport $PORT|processes with" >&2 || true
     echo "--- lsof" >&2; lsof -nP -iTCP -sTCP:LISTEN 1>&2 || true; echo "--- server pid $SERVER_PID" >&2; ps -p "$SERVER_PID" -o pid,command 1>&2 || true
     fail "server on $PORT not detected"
 fi
