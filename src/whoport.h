@@ -56,7 +56,9 @@ long long wp_clock_ms(void); /* monotonic milliseconds */
 /* Interactive mode: unbuffered keys without echo. wp_term_raw(0) restores. */
 int wp_term_raw(int enable);
 enum { WP_KEY_NONE = -1, WP_KEY_UP = 1000, WP_KEY_DOWN, WP_KEY_PGUP, WP_KEY_PGDN, WP_KEY_ESC };
-int wp_read_key(int timeout_ms); /* a character, a WP_KEY_* code, or WP_KEY_NONE after the timeout */
+int wp_read_key(int timeout_ms);
+int wp_open_url(const char *url); /* opens the default browser, 0 on success */
+int wp_getcwd(char *out, size_t size); /* with forward slashes, 0 on success */ /* a character, a WP_KEY_* code, or WP_KEY_NONE after the timeout */
 const char *wp_home(void);
 int wp_is_alive(int pid);
 int wp_terminate(int pid, int force, char *err, size_t err_size); /* 0 when the signal was sent */
@@ -93,5 +95,8 @@ int wp_is_loopback(const char *addr);
 int wp_is_path(const char *s);
 int wp_is_system_dir(const char *dir);
 int wp_is_os_noise(const listener_t *l);
+/* What runs there: "Next.js", "PostgreSQL"... Empty when unknown. Returns 1
+ * if it speaks HTTP (worth opening in a browser), 0 if not, -1 if unknown. */
+int wp_detect_app(const listener_t *l, char *out, size_t size);
 
 #endif

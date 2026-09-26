@@ -95,9 +95,13 @@ pass "--kill stops the server and frees the port"
 [ "$("$BIN" --version)" != "" ] || fail "no version"
 pass "argument errors"
 
-"$BIN" help | grep -q -- "--kill" || fail "whoport help does not list the commands"
+# Every command and option must show up in the help.
+HELP=$("$BIN" help)
+for word in --kill --free --live --watch --wait --timeout --open --yes --all --json "whoport open" "whoport stop"; do
+    echo "$HELP" | grep -q -- "$word" || fail "whoport help does not mention $word"
+done
 "$BIN" --help | grep -q -- "--free" || fail "whoport --help does not list the commands"
-pass "help"
+pass "help lists every command"
 
 # --wait: returns as soon as a server comes up, and gives up after --timeout.
 WPORT=$((PORT + 1))
@@ -118,6 +122,35 @@ kill "$WATCH_PID" 2>/dev/null || true
 grep -q "in use" "$WORK/watch.txt" || fail "--watch did not report the busy port: $(cat "$WORK/watch.txt")"
 grep -q "closed" "$WORK/watch.txt" || fail "--watch did not report the closed port: $(cat "$WORK/watch.txt")"
 pass "--watch"
+
+# APP column, open and stop <project>: two servers in one project.
+SHOP="$WORK/shop"
+mkdir -p "$SHOP/api"
+: >"$SHOP/package.json"
+SP1=$((PORT + 2)); SP2=$((PORT + 3))
+# Each server gets its own shell that reaps it, so a stopped server does not
+# linger as a zombie that still looks alive.
+(cd "$SHOP" && "$PY" -m http.server "$SP1" --bind 127.0.0.1 >/dev/null 2>&1; true) &
+(cd "$SHOP/api" && "$PY" -m http.server "$SP2" --bind 127.0.0.1 >/dev/null 2>&1; true) &
+"$BIN" --wait "$SP1" "$SP2" --timeout 20 2>/dev/null || fail "shop servers did not start"
+"$BIN" --no-color | grep "$SP1" | grep -q "http.server" || fail "APP column does not name http.server: $("$BIN" --no-color)"
+"$BIN" --json "$SP1" | grep -q '"app": "http.server"' || fail "json lacks the app"
+pass "APP column"
+if [ "$WINDOWS" = 0 ]; then
+    mkdir -p "$WORK/bin"
+    printf '#!/bin/sh\necho "$1" > "%s/opened.txt"\n' "$WORK" >"$WORK/bin/xdg-open"
+    cp "$WORK/bin/xdg-open" "$WORK/bin/open"
+    chmod +x "$WORK/bin/xdg-open" "$WORK/bin/open"
+    PATH="$WORK/bin:$PATH" "$BIN" open "$SP1" >/dev/null || fail "whoport open failed"
+    grep -q "http://localhost:$SP1" "$WORK/opened.txt" || fail "whoport open did not open http://localhost:$SP1"
+    pass "open"
+fi
+"$BIN" stop shop </dev/null >/dev/null 2>&1 && fail "stop without a terminal and without --yes stopped something"
+"$BIN" stop no-such-project-here >/dev/null 2>&1 && fail "stop of an unknown project succeeded"
+OUT=$(cd "$SHOP/api" && "$BIN" stop --yes --force --no-color) || fail "stop --yes failed: $OUT"
+echo "$OUT" | grep -q "2 servers" || fail "stop did not find both servers: $OUT"
+if "$BIN" "$SP1" >/dev/null || "$BIN" "$SP2" >/dev/null; then fail "stop left a server running"; fi
+pass "stop <project>"
 
 # --live needs a terminal; drive it through a pseudo-terminal where Python has one.
 "$BIN" --live </dev/null >/dev/null 2>&1 && fail "--live ran without a terminal"

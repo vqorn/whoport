@@ -14,6 +14,8 @@
 #include <tlhelp32.h>
 #include <winternl.h>
 #include <io.h>
+#include <direct.h>
+#include <shellapi.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -102,6 +104,21 @@ int wp_read_key(int timeout_ms) {
         if (ch > 0 && ch < 128) return (int)ch;
         if (left == 0) return WP_KEY_NONE;
     }
+}
+
+static void to_utf8(const WCHAR *w, size_t wlen, char *out, size_t size);
+static void forward_slashes(char *s);
+
+int wp_open_url(const char *url) {
+    return (INT_PTR)ShellExecuteA(NULL, "open", url, NULL, NULL, SW_SHOWNORMAL) > 32 ? 0 : -1;
+}
+
+int wp_getcwd(char *out, size_t size) {
+    WCHAR w[WP_PATH_MAX];
+    if (!_wgetcwd(w, WP_PATH_MAX)) return -1;
+    to_utf8(w, wcslen(w), out, size);
+    forward_slashes(out);
+    return 0;
 }
 
 int wp_term_width(void) {

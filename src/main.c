@@ -5,7 +5,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdarg.h>
+#include <strings.h>
 #include <time.h>
 
 #ifndef WHOPORT_VERSION
@@ -27,6 +29,7 @@ static const char *home = NULL;
 #define GREEN C("32")
 #define YELLOW C("33")
 #define CYAN C("36")
+#define MAGENTA C("35")
 
 static void usage(FILE *f) {
     fprintf(f,
@@ -35,15 +38,21 @@ static void usage(FILE *f) {
             "Usage\n"
             "  whoport                  list every listening port\n"
             "  whoport <port>...        show who is using these ports\n"
-            "  whoport <port> --kill    stop the process on that port\n"
+            "  whoport <port> --kill    stop the process on that port (also: whoport stop <port>)\n"
+            "  whoport open <port>      open http://localhost:<port> in the browser\n"
+            "  whoport stop [project]   stop every server of a project: a folder name, a path,\n"
+            "                           or nothing for the project you are in\n"
             "  whoport --free [port]    print the first free port from [port] (default 3000)\n"
-            "  whoport --live           live view: select with arrow keys, stop with k\n"
+            "  whoport --live           live view: arrow keys select, o open, k stop,\n"
+            "                           p stop the whole project, q quit\n"
             "  whoport --watch [port]   print a line whenever a port opens or closes\n"
             "  whoport --wait <port>    wait until something listens on the port\n"
             "\n"
             "Options\n"
             "  -k, --kill      stop the process (SIGTERM, then waits up to 3 seconds)\n"
-            "  -f, --force     with --kill: use SIGKILL if it does not stop in time\n"
+            "  -f, --force     with --kill or stop: use SIGKILL if it does not stop in time\n"
+            "  -y, --yes       with stop <project>: do not ask before stopping\n"
+            "  -o, --open      same as whoport open <port>\n"
             "  -a, --all       also show operating system services and other users' ports\n"
             "  -j, --json      machine-readable output\n"
             "      --timeout N with --wait: give up after N seconds (default 60, 0 = never)\n"
@@ -56,6 +65,8 @@ static void usage(FILE *f) {
             "  whoport 3000                      who is on port 3000?\n"
             "  whoport 3000 5173                 several ports at once\n"
             "  whoport 3000 --kill               free port 3000\n"
+            "  whoport open 5173                 open your dev server in the browser\n"
+            "  whoport stop fontia               stop everything of ~/.../fontia, containers too\n"
             "  PORT=$(whoport --free 3000) npm run dev\n"
             "  docker compose up -d && whoport --wait 5432 && npm run dev\n"
             "\n"
@@ -110,6 +121,14 @@ static void command_of(const listener_t *l, char *out, size_t size) {
     }
 }
 
+/* APP column: "Next.js", "PostgreSQL"... */
+static void app_of(const listener_t *l, char *out, size_t size) {
+    if (l->pid < 0 && !l->container[0]) out[0] = '\0';
+    else wp_detect_app(l, out, size);
+}
+
+#define APP_MAX 14
+
 static long long uptime_of(const listener_t *l, time_t now) {
     return l->started > 0 ? (long long)now - l->started : -1;
 }
@@ -162,6 +181,11 @@ static void print_json(const listener_list *list, time_t now) {
         json_string(l->cwd);
         printf(", \"project\": ");
         json_string(project);
+        char app[32];
+        app_of(l, app, sizeof app);
+        printf(", \"app\": ");
+        if (app[0]) json_string(app);
+        else printf("null");
         printf(", \"uptime_seconds\": %lld, \"memory_bytes\": %lld, \"restricted\": %s, \"container\": ",
                uptime_of(l, now), l->rss, l->restricted ? "true" : "false");
         if (l->container[0]) {
@@ -201,39 +225,45 @@ static void print_table(const listener_list *list, time_t now, int all) {
         printf("\n");
         return;
     }
-    int w_proj = 7, w_cmd = 7;
-    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX];
+    int w_proj = 7, w_cmd = 7, w_app = 0;
+    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX], app[32];
     for (size_t i = 0; i < list->len; i++) {
         if (!shown(&list->items[i], all)) continue;
         project_of(&list->items[i], proj, sizeof proj);
         command_of(&list->items[i], cmd, sizeof cmd);
+        app_of(&list->items[i], app, sizeof app);
         if ((int)strlen(proj) > w_proj) w_proj = (int)strlen(proj);
         if ((int)strlen(cmd) > w_cmd) w_cmd = (int)strlen(cmd);
+        if ((int)strlen(app) > w_app) w_app = (int)strlen(app);
     }
     if (w_proj > 30) w_proj = 30;
     if (w_cmd > 36) w_cmd = 36;
+    if (w_app > APP_MAX) w_app = APP_MAX;
+    if (w_app && w_app < 3) w_app = 3;
     /* Never wrap: shrink the two text columns to fit the terminal. A row is
-     * 41 characters plus both columns. */
+     * 41 characters plus the text columns. */
+    int base = 41 + (w_app ? w_app + 2 : 0);
     int term = wp_term_width();
     if (term > 0) {
-        int over = 41 + w_proj + w_cmd - (term - 1);
+        int over = base + w_proj + w_cmd - (term - 1);
         while (over > 0 && (w_proj > 16 || w_cmd > 20)) {
             if (w_proj > 16 && (w_proj >= w_cmd || w_cmd <= 20)) w_proj--;
             else w_cmd--;
             over--;
         }
     }
-    int room_for_hint = term <= 0 || 41 + w_proj + w_cmd + 15 <= term - 1;
+    int room_for_hint = term <= 0 || base + w_proj + w_cmd + 15 <= term - 1;
 
-    printf("\n  %s%-6s %-*s  %-*s  %7s  %9s  %8s%s\n", DIM, "PORT", w_proj, "PROJECT", w_cmd, "COMMAND", "PID",
-           "RUNNING", "MEMORY", RESET);
+    printf("\n  %s%-6s %-*s  ", DIM, "PORT", w_proj, "PROJECT");
+    if (w_app) printf("%-*s  ", w_app, "APP");
+    printf("%-*s  %7s  %9s  %8s%s\n", w_cmd, "COMMAND", "PID", "RUNNING", "MEMORY", RESET);
     int stale = 0, stale_port = 0;
     for (size_t i = 0; i < list->len; i++) {
         const listener_t *l = &list->items[i];
         if (!shown(l, all)) continue;
         if (l->pid < 0 && !l->container[0]) {
-            printf("  %s%-6d%s %s%-*s  %s%s\n", BOLD, l->port, RESET, DIM, w_proj, "?", "(another user, try sudo)",
-                   RESET);
+            printf("  %s%-6d%s %s%-*s  %*s%s%s\n", BOLD, l->port, RESET, DIM, w_proj, "?", w_app ? w_app + 2 : 0, "",
+                   "(another user, try sudo)", RESET);
             continue;
         }
         char up[32], mem[32], pid[16];
@@ -257,6 +287,11 @@ static void print_table(const listener_list *list, time_t now, int all) {
         printf("  %s%-6d%s ", BOLD, l->port, RESET);
         fit(proj, w_proj, cell, sizeof cell);
         printf("%s%-*s%s  ", is_project(proj) ? CYAN : DIM, w_proj, cell, RESET);
+        if (w_app) {
+            app_of(l, app, sizeof app);
+            fit(app, w_app, cell, sizeof cell);
+            printf("%s%-*s%s  ", MAGENTA, w_app, cell, RESET);
+        }
         fit(cmd, w_cmd, cell, sizeof cell);
         printf("%-*s  %s%7s%s  %s%9s%s  %8s", w_cmd, cell, DIM, pid, RESET, is_stale ? YELLOW : "", up, RESET, mem);
         if (is_stale && room_for_hint) printf("  %s<- forgotten?%s", YELLOW, RESET);
@@ -291,6 +326,8 @@ static void print_detail(const listener_t *l, time_t now) {
         return;
     }
     project_of(l, project, sizeof project);
+    char app[32];
+    app_of(l, app, sizeof app);
     wp_format_duration(uptime_of(l, now), up, sizeof up);
     wp_format_bytes(l->rss, mem, sizeof mem);
     when[0] = '\0';
@@ -304,6 +341,7 @@ static void print_detail(const listener_t *l, time_t now) {
         printf("\n  %sPort %d%s is published by Docker container %s%s%s\n\n", BOLD, l->port, RESET, BOLD, l->container,
                RESET);
         printf("  %-9s %s\n", "Image", l->image);
+        if (app[0]) printf("  %-9s %s%s%s\n", "App", MAGENTA, app, RESET);
         if (l->compose_dir[0]) printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
         if (l->started > 0) printf("  %-9s %s %s\n", "Running", up, when);
         printf("  %-9s %s\n", "Address", l->addr);
@@ -313,6 +351,7 @@ static void print_detail(const listener_t *l, time_t now) {
     printf("\n  %sPort %d%s is used by %s%s%s %s(pid %d)%s\n\n", BOLD, l->port, RESET, BOLD, l->name, RESET, DIM,
            l->pid, RESET);
     printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
+    if (app[0]) printf("  %-9s %s%s%s\n", "App", MAGENTA, app, RESET);
     printf("  %-9s %s\n", "Command", l->command);
     if (l->restricted) {
         printf("  %-9s %s(run as administrator to see uptime, memory and folder)%s\n", "Details", DIM, RESET);
@@ -429,6 +468,179 @@ static int snapshot(listener_list *list) {
     if (wp_collect(list) != 0) return -1;
     attach_containers(list);
     return 0;
+}
+
+/* ---------- open, stop <project> ---------- */
+
+/* Opens the port in the browser. 0 when opened, 2 when not. */
+static int open_msg(const listener_t *l, char *msg, size_t size) {
+    char app[32], url[64];
+    int http = wp_detect_app(l, app, sizeof app);
+    if (http == 0) {
+        snprintf(msg, size, "%s%s on port %d does not speak HTTP, there is nothing to open in a browser.%s", YELLOW, app,
+                 l->port, RESET);
+        return 2;
+    }
+    snprintf(url, sizeof url, "%s://localhost:%d", l->port == 443 || l->port == 8443 ? "https" : "http", l->port);
+    if (wp_open_url(url) != 0) {
+        snprintf(msg, size, "%sCould not start a browser. Open %s yourself.%s", RED, url, RESET);
+        return 2;
+    }
+    snprintf(msg, size, "%s✓%s Opened %s%s%s", GREEN, RESET, BOLD, url, RESET);
+    return 0;
+}
+
+static void slashes(char *p) {
+    for (; *p; p++)
+        if (*p == '\\') *p = '/';
+}
+
+static void strip_slash(char *p) {
+    size_t n = strlen(p);
+    while (n > 1 && p[n - 1] == '/' && !(n == 3 && p[1] == ':')) p[--n] = '\0';
+}
+
+/* Full project folder of a listener, "" if unknown. */
+static void root_of(const listener_t *l, char *out, size_t size) {
+    out[0] = '\0';
+    if (l->container[0]) wp_copy(out, size, l->compose_dir);
+    else if (l->pid >= 0 && l->cwd[0]) wp_find_project_root(l->cwd, home, out, size);
+    slashes(out);
+    strip_slash(out);
+}
+
+static int same_path(const char *a, const char *b) {
+    int windows = isalpha((unsigned char)a[0]) && a[1] == ':';
+    return windows ? strcasecmp(a, b) == 0 : strcmp(a, b) == 0;
+}
+
+static const char *base_name(const char *p) {
+    const char *slash = strrchr(p, '/');
+    return slash ? slash + 1 : p;
+}
+
+/* Turns "fontia", "~/code/shop", "." or nothing into a folder to match.
+ * *by_name is set when only the last part of the folder should match. */
+static int resolve_project(const char *arg, char *target, size_t size, int *by_name) {
+    char cwd[WP_PATH_MAX];
+    *by_name = 0;
+    if (!arg || !strcmp(arg, ".") || !strcmp(arg, "./")) {
+        if (wp_getcwd(cwd, sizeof cwd) != 0) return -1;
+        slashes(cwd);
+        wp_find_project_root(cwd, home, target, size);
+    } else if (strchr(arg, '/') || strchr(arg, '\\') || arg[0] == '~') {
+        if (arg[0] == '~' && home) snprintf(target, size, "%s%s", home, arg + 1);
+        else if (arg[0] == '/' || (isalpha((unsigned char)arg[0]) && arg[1] == ':')) wp_copy(target, size, arg);
+        else {
+            if (wp_getcwd(cwd, sizeof cwd) != 0) return -1;
+            int n = snprintf(target, size, "%s/%s", cwd, arg[0] == '.' && (arg[1] == '/' || arg[1] == '\\') ? arg + 2 : arg);
+            if (n < 0 || (size_t)n >= size) return -1;
+        }
+    } else {
+        wp_copy(target, size, arg);
+        *by_name = 1;
+        return 0;
+    }
+    slashes(target);
+    strip_slash(target);
+    return 0;
+}
+
+/* Indices of the servers that belong to the project, one per process or container. */
+static int project_targets(const listener_list *list, const char *target, int by_name, int *idx, int max,
+                           char *root_out, size_t root_size, int *roots) {
+    int n = 0;
+    *roots = 0;
+    root_out[0] = '\0';
+    for (size_t i = 0; i < list->len && n < max; i++) {
+        const listener_t *l = &list->items[i];
+        if (l->pid < 0 && !l->container[0]) continue;
+        char root[WP_PATH_MAX];
+        root_of(l, root, sizeof root);
+        if (!root[0]) continue;
+        if (by_name ? strcasecmp(base_name(root), target) != 0 : !same_path(root, target)) continue;
+        int dup = 0;
+        for (int k = 0; k < n && !dup; k++) {
+            const listener_t *o = &list->items[idx[k]];
+            dup = l->container[0] ? !strcmp(o->container, l->container) : !o->container[0] && o->pid == l->pid;
+        }
+        if (dup) continue;
+        if (!root_out[0]) {
+            wp_copy(root_out, root_size, root);
+            *roots = 1;
+        } else if (!same_path(root_out, root)) {
+            (*roots)++;
+        }
+        idx[n++] = (int)i;
+    }
+    return n;
+}
+
+static int is_home_or_root(const char *dir) {
+    return !dir[0] || !strcmp(dir, "/") || (home && same_path(dir, home)) || (strlen(dir) <= 3 && dir[1] == ':');
+}
+
+/* whoport stop [project] */
+static int stop_project(const listener_list *list, const char *arg, int force, int yes) {
+    char target[WP_PATH_MAX], root[WP_PATH_MAX], shown_root[WP_PATH_MAX];
+    int by_name, idx[256], roots;
+    if (resolve_project(arg, target, sizeof target, &by_name) != 0) {
+        fprintf(stderr, "whoport: could not read the current folder\n");
+        return 2;
+    }
+    if (!by_name && is_home_or_root(target)) {
+        fprintf(stderr, "whoport: %s is not a project folder. Run this inside a project, or name it: whoport stop myapp\n",
+                target[0] ? target : "this");
+        return 2;
+    }
+    int n = project_targets(list, target, by_name, idx, 256, root, sizeof root, &roots);
+    if (!n) {
+        wp_shorten_home(target, home, shown_root, sizeof shown_root);
+        printf("\n  %sNothing is running in %s.%s\n\n", GREEN, shown_root, RESET);
+        return 1;
+    }
+    if (roots > 1) {
+        fprintf(stderr, "\n  %sSeveral projects are called \"%s\":%s\n", YELLOW, target, RESET);
+        for (int k = 0; k < n; k++) {
+            char r[WP_PATH_MAX];
+            root_of(&list->items[idx[k]], r, sizeof r);
+            wp_shorten_home(r, home, shown_root, sizeof shown_root);
+            fprintf(stderr, "    %s\n", shown_root);
+        }
+        fprintf(stderr, "\n  Name the folder instead, e.g. whoport stop %s\n\n", shown_root);
+        return 2;
+    }
+    wp_shorten_home(root, home, shown_root, sizeof shown_root);
+    printf("\n  %s%s%s%s: %d server%s\n\n", BOLD, CYAN, shown_root, RESET, n, n == 1 ? "" : "s");
+    for (int k = 0; k < n; k++) {
+        const listener_t *l = &list->items[idx[k]];
+        char cmd[WP_CMD_MAX], app[32];
+        command_of(l, cmd, sizeof cmd);
+        app_of(l, app, sizeof app);
+        printf("    %s%-6d%s %s%-12s%s %s\n", BOLD, l->port, RESET, MAGENTA, app, RESET, cmd);
+    }
+    if (!yes) {
+        if (!wp_stdin_is_tty()) {
+            fflush(stdout);
+            fprintf(stderr, "\n  whoport: add --yes to stop them without asking\n\n");
+            return 2;
+        }
+        printf("\n  Stop %s? [y/N] ", n == 1 ? "it" : "all of them");
+        fflush(stdout);
+        char answer[16] = "";
+        if (!fgets(answer, sizeof answer, stdin) || (answer[0] != 'y' && answer[0] != 'Y')) {
+            printf("  Nothing stopped.\n\n");
+            return 1;
+        }
+    }
+    printf("\n");
+    int status = 0;
+    for (int k = 0; k < n; k++) {
+        int r = stop(&list->items[idx[k]], force);
+        if (r) status = r;
+    }
+    printf("\n");
+    return status;
 }
 
 /* ---------- --wait, --watch ---------- */
@@ -653,24 +865,29 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
     sb_printf(b, "\n  %swhoport%s %slive  ·  %d port%s  ·  %s%s\033[K\n\n", BOLD, RESET, DIM, nrows, nrows == 1 ? "" : "s",
               t, RESET);
 
-    int w_proj = 7, w_cmd = 7;
-    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX], cell2[WP_CMD_MAX];
+    int w_proj = 7, w_cmd = 7, w_app = 0;
+    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX], cell2[WP_CMD_MAX], app[32], cell3[32];
     for (int r = 0; r < nrows; r++) {
         project_of(&list->items[rows[r]], proj, sizeof proj);
         command_of(&list->items[rows[r]], cmd, sizeof cmd);
+        app_of(&list->items[rows[r]], app, sizeof app);
         if ((int)strlen(proj) > w_proj) w_proj = (int)strlen(proj);
         if ((int)strlen(cmd) > w_cmd) w_cmd = (int)strlen(cmd);
+        if ((int)strlen(app) > w_app) w_app = (int)strlen(app);
     }
     if (w_proj > 30) w_proj = 30;
     if (w_cmd > 36) w_cmd = 36;
-    int over = 43 + w_proj + w_cmd - (w - 1);
+    if (w_app > APP_MAX) w_app = APP_MAX;
+    if (w_app && w_app < 3) w_app = 3;
+    int w_appcol = w_app ? w_app + 2 : 0;
+    int over = 43 + w_appcol + w_proj + w_cmd - (w - 1);
     while (over > 0 && (w_proj > 12 || w_cmd > 14)) {
         if (w_proj > 12 && (w_proj >= w_cmd || w_cmd <= 14)) w_proj--;
         else w_cmd--;
         over--;
     }
-    sb_printf(b, "  %s  %-6s %-*s  %-*s  %7s  %9s  %8s%s\033[K\n", DIM, "PORT", w_proj, "PROJECT", w_cmd, "COMMAND",
-              "PID", "RUNNING", "MEMORY", RESET);
+    sb_printf(b, "  %s  %-6s %-*s  %-*s%-*s  %7s  %9s  %8s%s\033[K\n", DIM, "PORT", w_proj, "PROJECT", w_appcol,
+              w_app ? "APP" : "", w_cmd, "COMMAND", "PID", "RUNNING", "MEMORY", RESET);
 
     int body = h - 13; /* header 4, detail and keys 9 */
     if (body < 3) body = 3;
@@ -688,17 +905,19 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
         project_of(l, proj, sizeof proj);
         command_of(l, cmd, sizeof cmd);
         if (l->pid < 0 && !l->container[0]) wp_copy(cmd, sizeof cmd, "(another user)");
+        app_of(l, app, sizeof app);
         fit(proj, w_proj, cell, sizeof cell);
         fit(cmd, w_cmd, cell2, sizeof cell2);
+        fit(app, w_app, cell3, sizeof cell3);
         long long fs = first_seen(seen, l, now_ms, 0);
         int fresh = fs > 0 && now_ms - fs < LIVE_NEW_MS;
         if (r == sel) {
-            sb_printf(b, "  %s›%s %s%-6d %-*s  %-*s  %7s  %9s  %8s%s\033[K\n", CYAN, RESET, C("7"), l->port, w_proj,
-                      cell, w_cmd, cell2, pid, up, mem, RESET);
+            sb_printf(b, "  %s›%s %s%-6d %-*s  %-*s%-*s  %7s  %9s  %8s%s\033[K\n", CYAN, RESET, C("7"), l->port, w_proj,
+                      cell, w_appcol, w_app ? cell3 : "", w_cmd, cell2, pid, up, mem, RESET);
         } else {
-            sb_printf(b, "    %s%-6d%s %s%-*s%s  %-*s  %s%7s%s  %9s  %8s\033[K\n", fresh ? GREEN : BOLD, l->port, RESET,
-                      fresh ? GREEN : is_project(proj) ? CYAN : DIM, w_proj, cell, RESET, w_cmd, cell2, DIM, pid, RESET,
-                      up, mem);
+            sb_printf(b, "    %s%-6d%s %s%-*s%s  %s%-*s%s%-*s  %s%7s%s  %9s  %8s\033[K\n", fresh ? GREEN : BOLD, l->port,
+                      RESET, fresh ? GREEN : is_project(proj) ? CYAN : DIM, w_proj, cell, RESET, MAGENTA, w_appcol,
+                      w_app ? cell3 : "", RESET, w_cmd, cell2, DIM, pid, RESET, up, mem);
         }
     }
     if (!nrows) sb_printf(b, "    %sNo listening ports%s.%s\033[K\n", DIM, hidden ? " besides system services (press a)" : "", RESET);
@@ -728,12 +947,15 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
                       RESET);
         } else if (l->container[0]) {
             fit(l->container, dw, cell, sizeof cell);
-            sb_printf(b, "  %sPort %d%s  Docker container %s%s%s\033[K\n", BOLD, l->port, RESET, BOLD, cell, RESET);
+            app_of(l, app, sizeof app);
+            sb_printf(b, "  %sPort %d%s  %s%s%s%sDocker container %s%s%s\033[K\n", BOLD, l->port, RESET, MAGENTA, app, RESET,
+                      app[0] ? "  " : "", BOLD, cell, RESET);
             fit(l->image, dw, cell, sizeof cell);
             sb_printf(b, "  %sImage%s     %s\033[K\n", DIM, RESET, cell);
         } else {
-            sb_printf(b, "  %sPort %d%s  %s%s%s %s(pid %d)%s\033[K\n", BOLD, l->port, RESET, BOLD, l->name, RESET, DIM,
-                      l->pid, RESET);
+            app_of(l, app, sizeof app);
+            sb_printf(b, "  %sPort %d%s  %s%s%s%s%s %s%s%s %s(pid %d)%s\033[K\n", BOLD, l->port, RESET, MAGENTA, app, RESET,
+                      app[0] ? "  " : "", "", BOLD, l->name, RESET, DIM, l->pid, RESET);
             fit(l->command[0] ? l->command : "?", dw, cell, sizeof cell);
             sb_printf(b, "  %sCommand%s   %s\033[K\n", DIM, RESET, cell);
         }
@@ -749,8 +971,9 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
     sb_printf(b, "\033[K\n  ");
     sb_fit(b, status, w - 3);
     sb_printf(b, "\033[K\n");
-    sb_printf(b, "\033[K\n  %s↑↓%s select   %sk%s stop   %sK%s force stop   %sa%s %s   %sq%s quit\033[K", BOLD, RESET, BOLD,
-              RESET, BOLD, RESET, BOLD, RESET, all ? "hide system services" : "show all", BOLD, RESET);
+    sb_printf(b, "\033[K\n  %s↑↓%s select  %so%s open  %sk%s stop  %sK%s force  %sp%s stop project  %sa%s %s  %sq%s quit\033[K",
+              BOLD, RESET, BOLD, RESET, BOLD, RESET, BOLD, RESET, BOLD, RESET, BOLD, RESET, all ? "hide system" : "all",
+              BOLD, RESET);
     sb_printf(b, "\033[J");
 }
 
@@ -776,6 +999,9 @@ static int live_mode(int all) {
     seen_list seen = {0};
     sbuf out = {0};
     int *rows = NULL, nrows = 0, sel = 0, scroll = 0, sel_port = -1, sel_pid = -1, confirm = 0, initial = 1, force = 0;
+    listener_t project_items[64];
+    int project_n = 0;
+    char project_root[WP_PATH_MAX] = "";
     in_live = 1;
     char status[WP_CMD_MAX + WP_PATH_MAX + 256] = "";
     long long next_refresh = 0, status_until = 0;
@@ -819,7 +1045,28 @@ static int live_mode(int all) {
         if (key == WP_KEY_NONE) continue;
         if (confirm) {
             confirm = 0;
-            if ((key == 'y' || key == 'Y') && nrows) {
+            if ((key == 'y' || key == 'Y') && nrows && project_n) {
+                char shown_root[WP_PATH_MAX];
+                wp_shorten_home(project_root, home, shown_root, sizeof shown_root);
+                snprintf(status, sizeof status, "%sStopping %d server%s in %s...%s", DIM, project_n,
+                         project_n == 1 ? "" : "s", shown_root, RESET);
+                live_render(&out, &list, rows, nrows, sel, &scroll, all, 0, &seen, status);
+                fwrite(out.p, 1, out.len, stdout);
+                fflush(stdout);
+                int ok = 0;
+                char last[sizeof status] = "";
+                for (int k = 0; k < project_n; k++) {
+                    listener_t victim = project_items[k];
+                    if (stop_msg(&victim, 0, last, sizeof last) == 0) ok++;
+                }
+                if (ok == project_n)
+                    snprintf(status, sizeof status, "%s✓%s Stopped %d server%s in %s%s%s.", GREEN, RESET, ok,
+                             ok == 1 ? "" : "s", CYAN, shown_root, RESET);
+                else
+                    snprintf(status, sizeof status, "%sStopped %d of %d. %s", YELLOW, ok, project_n, last);
+                project_n = 0;
+                next_refresh = 0;
+            } else if ((key == 'y' || key == 'Y') && nrows) {
                 listener_t victim = list.items[rows[sel]];
                 snprintf(status, sizeof status, "%sStopping port %d...%s", DIM, victim.port, RESET);
                 live_render(&out, &list, rows, nrows, sel, &scroll, all, 0, &seen, status);
@@ -829,6 +1076,7 @@ static int live_mode(int all) {
                 next_refresh = 0;
             } else {
                 status[0] = '\0';
+                project_n = 0;
             }
             status_until = wp_clock_ms() + 5000;
             continue;
@@ -845,6 +1093,32 @@ static int live_mode(int all) {
             case WP_KEY_PGUP: sel = sel > 10 ? sel - 10 : 0; break;
             case WP_KEY_PGDN: sel = sel + 10 < nrows ? sel + 10 : (nrows ? nrows - 1 : 0); break;
             case 'a': case 'A': all = !all; next_refresh = 0; break;
+            case 'o': case 'O':
+                if (nrows) {
+                    open_msg(&list.items[rows[sel]], status, sizeof status);
+                    status_until = wp_clock_ms() + 5000;
+                }
+                break;
+            case 'p': case 'P':
+                if (nrows) {
+                    root_of(&list.items[rows[sel]], project_root, sizeof project_root);
+                    if (!project_root[0] || is_home_or_root(project_root)) {
+                        snprintf(status, sizeof status, "%sPort %d is not part of a project folder.%s", YELLOW,
+                                 list.items[rows[sel]].port, RESET);
+                        status_until = wp_clock_ms() + 5000;
+                        break;
+                    }
+                    int idx[64], roots;
+                    char r[WP_PATH_MAX], shown_root[WP_PATH_MAX];
+                    project_n = project_targets(&list, project_root, 0, idx, 64, r, sizeof r, &roots);
+                    for (int k = 0; k < project_n; k++) project_items[k] = list.items[idx[k]];
+                    wp_shorten_home(project_root, home, shown_root, sizeof shown_root);
+                    snprintf(status, sizeof status, "%sStop %s%d server%s%s%s in %s%s%s%s? %sy%s%s/n%s", YELLOW,
+                             BOLD, project_n, project_n == 1 ? "" : "s", RESET, YELLOW, CYAN, shown_root, RESET,
+                             YELLOW, BOLD, RESET, YELLOW, RESET);
+                    confirm = 1;
+                }
+                break;
             case 'k': case 'K': case 'x':
                 if (nrows) {
                     const listener_t *l = &list.items[rows[sel]];
@@ -869,10 +1143,34 @@ static int live_mode(int all) {
 int main(int argc, char **argv) {
     int ports[MAX_QUERY], nports = 0;
     int do_kill = 0, force = 0, json = 0, all = 0, free_mode = 0, live = 0, watch = 0, wait = 0, timeout = 60;
+    int open_mode = 0, stop_proj = 0, yes = 0;
+    const char *project_arg = NULL;
     wp_platform_init();
     color = wp_stdout_is_tty() && !getenv("NO_COLOR");
 
-    for (int i = 1; i < argc; i++) {
+    /* Subcommands: whoport open 3000, whoport stop [project|port], whoport kill 3000. */
+    int first = 1;
+    if (argc > 1 && !strcmp(argv[1], "open")) {
+        open_mode = 1;
+        first = 2;
+    } else if (argc > 1 && !strcmp(argv[1], "kill")) {
+        do_kill = 1;
+        first = 2;
+    } else if (argc > 1 && !strcmp(argv[1], "stop")) {
+        first = 2;
+        const char *next = argc > 2 ? argv[2] : NULL;
+        if (next && wp_parse_port(next[0] == ':' ? next + 1 : next) > 0) {
+            do_kill = 1; /* whoport stop 3000 */
+        } else {
+            stop_proj = 1;
+            if (next && next[0] != '-') {
+                project_arg = next;
+                first = 3;
+            }
+        }
+    }
+
+    for (int i = first; i < argc; i++) {
         const char *a = argv[i];
         if (!strcmp(a, "-h") || !strcmp(a, "--help") || !strcmp(a, "help") || !strcmp(a, "-?") || !strcmp(a, "/?")) {
             usage(stdout);
@@ -892,6 +1190,10 @@ int main(int argc, char **argv) {
             watch = 1;
         } else if (!strcmp(a, "--wait")) {
             wait = 1;
+        } else if (!strcmp(a, "-o") || !strcmp(a, "--open")) {
+            open_mode = 1;
+        } else if (!strcmp(a, "-y") || !strcmp(a, "--yes")) {
+            yes = 1;
         } else if (!strcmp(a, "--timeout")) {
             char *end = NULL;
             long t = i + 1 < argc ? strtol(argv[i + 1], &end, 10) : -1;
@@ -922,12 +1224,20 @@ int main(int argc, char **argv) {
         fprintf(stderr, "whoport: --kill needs a port, e.g. whoport 3000 --kill\n");
         return 2;
     }
-    if (live + watch + wait + free_mode + do_kill > 1) {
-        fprintf(stderr, "whoport: use only one of --live, --watch, --wait, --free and --kill\n");
+    if (live + watch + wait + free_mode + do_kill + open_mode + stop_proj > 1) {
+        fprintf(stderr, "whoport: use only one of --live, --watch, --wait, --free, --kill, open and stop\n");
         return 2;
     }
-    if (json && (live || watch || wait)) {
-        fprintf(stderr, "whoport: --json does not work with --live, --watch or --wait\n");
+    if (open_mode && !nports) {
+        fprintf(stderr, "whoport: open needs a port, e.g. whoport open 3000\n");
+        return 2;
+    }
+    if (stop_proj && nports) {
+        fprintf(stderr, "whoport: stop takes a project or a port, not both\n");
+        return 2;
+    }
+    if (json && (live || watch || wait || open_mode || stop_proj)) {
+        fprintf(stderr, "whoport: --json does not work with --live, --watch, --wait, open or stop\n");
         return 2;
     }
     if (wait && !nports) {
@@ -977,6 +1287,12 @@ int main(int argc, char **argv) {
 
     attach_containers(&list);
 
+    if (stop_proj) {
+        int r = stop_project(&list, project_arg, force, yes);
+        wp_list_free(&list);
+        return r;
+    }
+
     if (!nports) {
         if (json) print_json(&list, now);
         else print_table(&list, now, all);
@@ -1002,6 +1318,16 @@ int main(int argc, char **argv) {
 
     if (json) {
         print_json(&picked, now);
+    } else if (open_mode) {
+        for (size_t i = 0; i < picked.len; i++) {
+            /* Several entries for one port (IPv4 and IPv6): open it once. */
+            if (i && picked.items[i].port == picked.items[i - 1].port) continue;
+            char msg[256];
+            int r = open_msg(&picked.items[i], msg, sizeof msg);
+            fprintf(r ? stderr : stdout, "\n  %s\n", msg);
+            if (r) status = r;
+        }
+        printf("\n");
     } else if (do_kill) {
         if (picked.len) printf("\n");
         for (size_t i = 0; i < picked.len; i++) {
