@@ -24,6 +24,9 @@ You know the drill: `lsof -i :3000`, squint at a PID, `ps`, hunt for the termina
 - 🐳 **Knows your Docker containers**: shows the container name and its Compose project folder instead of `com.docker.backend`
 - 🔪 **`whoport 3000 --kill`** stops it politely (SIGTERM), waits, and confirms the port is free. For a container, it stops the container, not Docker
 - 🧹 **No noise**: operating system services are hidden (`--all` shows them)
+- 📺 **`whoport --live`**: a live view like `htop`, just for ports. Pick a row with the arrow keys, press `k` to stop it
+- ⏳ **`whoport --wait 5432`** waits until your database is up: `docker compose up -d && whoport --wait 5432 && npm run dev`
+- 👀 **`whoport --watch`** prints a line whenever a port opens or closes
 - 🔎 **`whoport --free`** prints the next free port, e.g. `PORT=$(whoport --free 3000) npm run dev`
 - 🧾 **`--json`** for scripts, and exit codes you can use in `if` statements
 - ⚡ A single small C binary. No dependencies, no runtime, starts instantly
@@ -69,6 +72,9 @@ whoport 3000            # who is on port 3000?
 whoport 3000 5173       # several at once (":3000" works too)
 whoport 3000 --kill     # stop it
 whoport 3000 --kill --force
+whoport --live          # live view: arrow keys to select, k to stop, q to quit
+whoport --watch         # print a line whenever a port opens or closes (or: whoport --watch 3000)
+whoport --wait 5432     # wait until something listens on 5432 (--timeout 60 by default)
 whoport --free          # first free port from 3000 (or: whoport --free 8080)
 whoport --all           # include operating system services
 whoport --json          # machine-readable
@@ -101,12 +107,39 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 
 `whoport 5433` shows the image as well. `whoport 5433 --kill` then runs the equivalent of `docker stop webshop-db-1`. Works with Docker Engine, Docker Desktop (also on Windows), Colima and OrbStack. Set `WHOPORT_NO_DOCKER=1` to skip the Docker lookup.
 
+### Live view
+
+`whoport --live` keeps the list on screen and updates it every second. New servers light up green for a moment. The selected row's details are shown below the table.
+
+| Key | |
+|---|---|
+| `↑` `↓` | select a port |
+| `k` | stop it (asks first) |
+| `K` | force stop |
+| `a` | show or hide system services |
+| `q` | quit |
+
+### Watch
+
+```
+$ whoport --watch 3000
+
+  Watching port 3000. Ctrl+C to stop.
+
+  14:02:05  3000   ○ free
+  14:02:11  3000   ▲ up      node server.js  ~/code/webshop
+  14:05:40  3000   ▼ closed  node server.js  ~/code/webshop
+```
+
+Without a port it watches every port. In a terminal it also rings the bell, so you notice while you are in another window.
+
 ### Scripts
 
-`whoport <port>` exits with `0` if the port is in use, `1` if it is free and `2` on errors:
+`whoport <port>` exits with `0` if the port is in use, `1` if it is free and `2` on errors. `whoport --wait` exits with `0` once the port is up and `1` after the timeout:
 
 ```sh
 whoport 5432 >/dev/null || docker compose up -d db
+docker compose up -d && whoport --wait 5432 --timeout 30 && npm run dev
 PORT=$(whoport --free 3000) npm run dev
 ```
 

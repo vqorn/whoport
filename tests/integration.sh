@@ -99,4 +99,48 @@ pass "argument errors"
 "$BIN" --help | grep -q -- "--free" || fail "whoport --help does not list the commands"
 pass "help"
 
+# --wait: returns as soon as a server comes up, and gives up after --timeout.
+WPORT=$((PORT + 1))
+"$BIN" --wait "$WPORT" --timeout 1 2>/dev/null && fail "--wait succeeded on a free port"
+(sleep 1; exec "$PY" -m http.server "$WPORT" --bind 127.0.0.1 >/dev/null 2>&1) &
+WAIT_SERVER=$!
+"$BIN" --wait "$WPORT" --timeout 20 2>/dev/null || fail "--wait did not see the server come up"
+pass "--wait"
+
+# --watch: prints a line when the port closes.
+"$BIN" --watch "$WPORT" --no-color >"$WORK/watch.txt" 2>&1 &
+WATCH_PID=$!
+sleep 2
+"$BIN" "$WPORT" --kill --force >/dev/null 2>&1 || true
+kill "$WAIT_SERVER" 2>/dev/null || true
+for _ in $(seq 1 50); do grep -q "closed" "$WORK/watch.txt" && break; sleep 0.2; done
+kill "$WATCH_PID" 2>/dev/null || true
+grep -q "in use" "$WORK/watch.txt" || fail "--watch did not report the busy port: $(cat "$WORK/watch.txt")"
+grep -q "closed" "$WORK/watch.txt" || fail "--watch did not report the closed port: $(cat "$WORK/watch.txt")"
+pass "--watch"
+
+# --live needs a terminal; drive it through a pseudo-terminal where Python has one.
+"$BIN" --live </dev/null >/dev/null 2>&1 && fail "--live ran without a terminal"
+if [ "$WINDOWS" = 0 ]; then
+    "$PY" - "$BIN" <<'PYEOF' || fail "--live did not start and quit cleanly"
+import os, pty, select, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    os.execv(sys.argv[1], [sys.argv[1], "--live"])
+out, end = b"", time.time() + 5
+while time.time() < end and b"quit" not in out:
+    if select.select([fd], [], [], 0.1)[0]:
+        out += os.read(fd, 65536)
+os.write(fd, b"q")
+end = time.time() + 5
+while time.time() < end:
+    done, status = os.waitpid(pid, os.WNOHANG)
+    if done:
+        sys.exit(0 if b"whoport" in out and os.waitstatus_to_exitcode(status) == 0 else 1)
+    time.sleep(0.1)
+sys.exit(1)
+PYEOF
+fi
+pass "--live"
+
 echo "all integration tests passed"

@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdarg.h>
 #include <time.h>
 
 #ifndef WHOPORT_VERSION
@@ -15,6 +16,7 @@
 #define LONG_RUNNING (24 * 3600)
 
 static int color = 1;
+static int in_live = 0; /* --live: hints name keys instead of flags */
 static const char *home = NULL;
 
 #define C(code) (color ? "\033[" code "m" : "")
@@ -35,12 +37,16 @@ static void usage(FILE *f) {
             "  whoport <port>...        show who is using these ports\n"
             "  whoport <port> --kill    stop the process on that port\n"
             "  whoport --free [port]    print the first free port from [port] (default 3000)\n"
+            "  whoport --live           live view: select with arrow keys, stop with k\n"
+            "  whoport --watch [port]   print a line whenever a port opens or closes\n"
+            "  whoport --wait <port>    wait until something listens on the port\n"
             "\n"
             "Options\n"
             "  -k, --kill      stop the process (SIGTERM, then waits up to 3 seconds)\n"
             "  -f, --force     with --kill: use SIGKILL if it does not stop in time\n"
             "  -a, --all       also show operating system services and other users' ports\n"
             "  -j, --json      machine-readable output\n"
+            "      --timeout N with --wait: give up after N seconds (default 60, 0 = never)\n"
             "      --color     force colours, e.g. when piping into less -R\n"
             "      --no-color  disable colours (also: NO_COLOR=1)\n"
             "  -h, --help      show this help (also: whoport help)\n"
@@ -51,7 +57,7 @@ static void usage(FILE *f) {
             "  whoport 3000 5173                 several ports at once\n"
             "  whoport 3000 --kill               free port 3000\n"
             "  PORT=$(whoport --free 3000) npm run dev\n"
-            "  whoport 5432 >/dev/null || docker compose up -d db\n"
+            "  docker compose up -d && whoport --wait 5432 && npm run dev\n"
             "\n"
             "Docker containers are shown by name; --kill stops the container.\n"
             "Exit status: 0 if a queried port is in use, 1 if it is free, 2 on errors.\n"
@@ -327,50 +333,542 @@ static int wait_for_exit(int pid, int ms) {
     return !wp_is_alive(pid);
 }
 
-static int stop(const listener_t *l, int force) {
+/* Stops whatever holds the port. Writes a one-line result to msg and
+ * returns 0 on success, 2 on failure. Used by --kill and by --live. */
+static int stop_msg(const listener_t *l, int force, char *msg, size_t size) {
+    char err[256] = "";
     if (l->container[0]) {
-        char err[256] = "";
         if (wp_docker_stop(l->container, err, sizeof err) != 0) {
-            fprintf(stderr, "  %sCould not stop container %s: %s%s\n", RED, l->container, err, RESET);
+            snprintf(msg, size, "%sCould not stop container %s: %s%s", RED, l->container, err, RESET);
             return 2;
         }
-        printf("  %s✓%s Stopped container %s%s%s. Port %d is free now.\n", GREEN, RESET, BOLD, l->container, RESET,
-               l->port);
+        snprintf(msg, size, "%s✓%s Stopped container %s%s%s. Port %d is free now.", GREEN, RESET, BOLD, l->container,
+                 RESET, l->port);
         return 0;
     }
     if (l->pid < 0) {
-        fprintf(stderr, "  %sPort %d belongs to another user. Try: sudo whoport %d --kill%s\n", RED, l->port,
-                l->port, RESET);
+        snprintf(msg, size, "%sPort %d belongs to another user. Try: sudo whoport %d --kill%s", RED, l->port, l->port,
+                 RESET);
         return 2;
     }
     char project[WP_PATH_MAX], cmd[WP_CMD_MAX];
     project_of(l, project, sizeof project);
     wp_short_command(l->command, home, cmd, sizeof cmd);
-    char err[256] = "";
     if (wp_terminate(l->pid, 0, err, sizeof err) != 0) {
-        fprintf(stderr, "  %sCould not stop pid %d: %s%s\n", RED, l->pid, err, RESET);
+        snprintf(msg, size, "%sCould not stop pid %d: %s%s", RED, l->pid, err, RESET);
         return 2;
     }
     if (!wait_for_exit(l->pid, 3000)) {
         if (!force) {
-            fprintf(stderr, "  %s\"%s\" did not stop within 3 seconds. Use --kill --force to make it.%s\n", YELLOW,
-                    cmd, RESET);
+            snprintf(msg, size, "%s\"%s\" did not stop within 3 seconds. %s%s", YELLOW, cmd,
+                     in_live ? "Press K to force it." : "Use --kill --force to make it.", RESET);
             return 2;
         }
         wp_terminate(l->pid, 1, err, sizeof err);
         if (!wait_for_exit(l->pid, 2000)) {
-            fprintf(stderr, "  %sCould not stop pid %d.%s\n", RED, l->pid, RESET);
+            snprintf(msg, size, "%sCould not stop pid %d.%s", RED, l->pid, RESET);
             return 2;
         }
     }
-    printf("  %s✓%s Stopped %s\"%s\"%s in %s. Port %d is free now.\n", GREEN, RESET, BOLD, cmd, RESET, project,
-           l->port);
+    snprintf(msg, size, "%s✓%s Stopped %s\"%s\"%s in %s. Port %d is free now.", GREEN, RESET, BOLD, cmd, RESET,
+             project, l->port);
     return 0;
+}
+
+static int stop(const listener_t *l, int force) {
+    char msg[WP_CMD_MAX + WP_PATH_MAX + 256];
+    int r = stop_msg(l, force, msg, sizeof msg);
+    fprintf(r ? stderr : stdout, "  %s\n", msg);
+    return r;
+}
+
+/* Ports published by Docker belong to a container, not to the Docker
+ * daemon or proxy process that holds the socket. */
+static void attach_containers(listener_list *list) {
+    wp_container *containers = NULL;
+    size_t n_containers = 0;
+    if (wp_docker_containers(&containers, &n_containers) == 0) {
+        for (size_t k = 0; k < n_containers; k++) {
+            int matched = 0;
+            for (size_t i = 0; i < list->len; i++) {
+                if (containers[k].port != list->items[i].port) continue;
+                listener_t *l = &list->items[i];
+                wp_copy(l->container, sizeof l->container, containers[k].name);
+                wp_copy(l->image, sizeof l->image, containers[k].image);
+                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                l->started = containers[k].started > 0   ? containers[k].started
+                             : containers[k].created > 0 ? containers[k].created
+                                                         : -1;
+                l->rss = -1;
+                matched = 1;
+            }
+            /* Without a userland proxy Docker forwards ports in the kernel, so
+             * no process holds the socket. Show the container anyway. */
+            if (!matched) {
+                listener_t *l = wp_list_push(list);
+                if (!l) break;
+                l->port = containers[k].port;
+                wp_copy(l->addr, sizeof l->addr, "0.0.0.0");
+                wp_copy(l->container, sizeof l->container, containers[k].name);
+                wp_copy(l->image, sizeof l->image, containers[k].image);
+                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                l->started = containers[k].started > 0   ? containers[k].started
+                             : containers[k].created > 0 ? containers[k].created
+                                                         : -1;
+                l->rss = -1;
+            }
+        }
+        free(containers);
+        wp_list_sort_dedupe(list);
+    }
+}
+
+/* Everything that listens right now, with containers attached. */
+static int snapshot(listener_list *list) {
+    memset(list, 0, sizeof *list);
+    if (wp_collect(list) != 0) return -1;
+    attach_containers(list);
+    return 0;
+}
+
+/* ---------- --wait, --watch ---------- */
+
+static const listener_t *find_port(const listener_list *list, int port) {
+    for (size_t i = 0; i < list->len; i++)
+        if (list->items[i].port == port) return &list->items[i];
+    return NULL;
+}
+
+/* "node server.js  ~/code/shop" for event lines. */
+static void describe(const listener_t *l, char *out, size_t size) {
+    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX];
+    project_of(l, proj, sizeof proj);
+    command_of(l, cmd, sizeof cmd);
+    snprintf(out, size, "%s  %s%s%s", cmd, is_project(proj) ? CYAN : DIM, proj, RESET);
+}
+
+static void clock_now(char *out, size_t size) {
+    struct tm tm;
+    wp_localtime((long long)time(NULL), &tm);
+    strftime(out, size, "%H:%M:%S", &tm);
+}
+
+/* --wait: block until every given port is in use. 0 when they are, 1 on timeout. */
+static int wait_mode(const int *ports, int nports, int timeout_s) {
+    long long deadline = timeout_s > 0 ? wp_clock_ms() + timeout_s * 1000LL : 0;
+    int announced = 0;
+    for (;;) {
+        listener_list list;
+        if (snapshot(&list) != 0) {
+            fprintf(stderr, "whoport: could not read the list of open ports\n");
+            return 2;
+        }
+        int missing = -1;
+        for (int q = 0; q < nports && missing < 0; q++)
+            if (!find_port(&list, ports[q])) missing = ports[q];
+        if (missing < 0) {
+            for (int q = 0; q < nports; q++) {
+                char what[WP_CMD_MAX + WP_PATH_MAX + 64];
+                describe(find_port(&list, ports[q]), what, sizeof what);
+                fprintf(stderr, "  %s✓%s Port %s%d%s is up: %s\n", GREEN, RESET, BOLD, ports[q], RESET, what);
+            }
+            wp_list_free(&list);
+            return 0;
+        }
+        wp_list_free(&list);
+        if (deadline && wp_clock_ms() >= deadline) {
+            fprintf(stderr, "  %sPort %d is still free after %d second%s.%s\n", RED, missing, timeout_s, timeout_s == 1 ? "" : "s", RESET);
+            return 1;
+        }
+        if (!announced) {
+            fprintf(stderr, "  %sWaiting for port %d...%s\n", DIM, missing, RESET);
+            announced = 1;
+        }
+        wp_sleep_ms(300);
+    }
+}
+
+/* Identity of whatever holds a port, to notice when it changes. */
+static int same_owner(const listener_t *a, const listener_t *b) {
+    return a->pid == b->pid && !strcmp(a->container, b->container);
+}
+
+static void event(const char *what, const char *arrow, const char *col, int port, const listener_t *l, int bell) {
+    char t[16], desc[WP_CMD_MAX + WP_PATH_MAX + 64] = "";
+    clock_now(t, sizeof t);
+    if (l) describe(l, desc, sizeof desc);
+    printf("  %s%s%s  %s%-5d%s  %s%s %-6s%s  %s\n", DIM, t, RESET, BOLD, port, RESET, col, arrow, what, RESET, desc);
+    if (bell) putchar('\a');
+    fflush(stdout);
+}
+
+/* --watch: print a line whenever a port opens or closes. Runs until Ctrl+C. */
+static int watch_mode(const int *ports, int nports, int all) {
+    int bell = wp_stdout_is_tty();
+    listener_list prev;
+    if (snapshot(&prev) != 0) {
+        fprintf(stderr, "whoport: could not read the list of open ports\n");
+        return 2;
+    }
+    if (nports) {
+        printf("\n  %sWatching port%s", DIM, nports > 1 ? "s" : "");
+        for (int q = 0; q < nports; q++) printf("%s %d", q ? "," : "", ports[q]);
+        printf(". Ctrl+C to stop.%s\n\n", RESET);
+        for (int q = 0; q < nports; q++) {
+            const listener_t *l = find_port(&prev, ports[q]);
+            if (l) event("in use", "●", CYAN, ports[q], l, 0);
+            else event("free", "○", DIM, ports[q], NULL, 0);
+        }
+    } else {
+        int n = 0;
+        for (size_t i = 0; i < prev.len; i++) n += shown(&prev.items[i], all) && find_port(&prev, prev.items[i].port) == &prev.items[i];
+        printf("\n  %sWatching all ports (%d in use now). Ctrl+C to stop.%s\n\n", DIM, n, RESET);
+    }
+    fflush(stdout);
+    for (;;) {
+        wp_sleep_ms(1000);
+        listener_list cur;
+        if (snapshot(&cur) != 0) continue;
+        /* Closed or taken over. */
+        for (size_t i = 0; i < prev.len; i++) {
+            const listener_t *old = &prev.items[i];
+            if (find_port(&prev, old->port) != old) continue; /* first entry per port only */
+            int wanted = 0;
+            for (int q = 0; q < nports; q++) wanted |= ports[q] == old->port;
+            if (nports ? !wanted : !shown(old, all)) continue;
+            const listener_t *now_l = find_port(&cur, old->port);
+            if (!now_l) event("closed", "▼", RED, old->port, old, bell);
+            else if (!same_owner(old, now_l)) event("closed", "▼", RED, old->port, old, bell);
+        }
+        /* Opened (or opened by someone new). */
+        for (size_t i = 0; i < cur.len; i++) {
+            const listener_t *l = &cur.items[i];
+            if (find_port(&cur, l->port) != l) continue;
+            int wanted = 0;
+            for (int q = 0; q < nports; q++) wanted |= ports[q] == l->port;
+            if (nports ? !wanted : !shown(l, all)) continue;
+            const listener_t *old = find_port(&prev, l->port);
+            if (!old || !same_owner(old, l)) event("up", "▲", GREEN, l->port, l, bell);
+        }
+        wp_list_free(&prev);
+        prev = cur;
+    }
+}
+
+/* ---------- --live ---------- */
+
+typedef struct {
+    char *p;
+    size_t len, cap;
+} sbuf;
+
+static void sb_printf(sbuf *b, const char *fmt, ...) {
+    va_list ap;
+    for (;;) {
+        size_t room = b->cap - b->len;
+        va_start(ap, fmt);
+        int n = b->p ? vsnprintf(b->p + b->len, room, fmt, ap) : -1;
+        va_end(ap);
+        if (n >= 0 && (size_t)n < room) {
+            b->len += (size_t)n;
+            return;
+        }
+        size_t cap = b->cap ? b->cap * 2 : 16384;
+        while (n >= 0 && cap - b->len <= (size_t)n) cap *= 2;
+        char *grown = realloc(b->p, cap);
+        if (!grown) return;
+        b->p = grown;
+        b->cap = cap;
+    }
+}
+
+typedef struct {
+    int port, pid;
+    char container[128];
+    long long first_seen; /* ms; 0 for everything that was there at the start */
+} seen_t;
+
+typedef struct {
+    seen_t *items;
+    size_t len, cap;
+} seen_list;
+
+static long long first_seen(seen_list *s, const listener_t *l, long long now_ms, int initial) {
+    for (size_t i = 0; i < s->len; i++)
+        if (s->items[i].port == l->port && s->items[i].pid == l->pid && !strcmp(s->items[i].container, l->container))
+            return s->items[i].first_seen;
+    if (s->len == s->cap) {
+        size_t cap = s->cap ? s->cap * 2 : 64;
+        seen_t *grown = realloc(s->items, cap * sizeof *grown);
+        if (!grown) return 0;
+        s->items = grown;
+        s->cap = cap;
+    }
+    seen_t *e = &s->items[s->len++];
+    e->port = l->port;
+    e->pid = l->pid;
+    wp_copy(e->container, sizeof e->container, l->container);
+    e->first_seen = initial ? 0 : now_ms;
+    return e->first_seen;
+}
+
+#define LIVE_NEW_MS 4000
+
+/* Appends s, cut to max visible columns; escape sequences do not count. */
+static void sb_fit(sbuf *b, const char *s, int max) {
+    int cols = 0;
+    const char *p = s;
+    while (*p) {
+        if (*p == '\033') {
+            const char *q = p + 1;
+            if (*q == '[') {
+                q++;
+                while (*q && !(*q >= '@' && *q <= '~')) q++;
+                if (*q) q++;
+            }
+            sb_printf(b, "%.*s", (int)(q - p), p);
+            p = q;
+            continue;
+        }
+        if (((unsigned char)*p & 0xC0) != 0x80) {
+            if (cols == max) break;
+            cols++;
+        }
+        sb_printf(b, "%c", *p++);
+    }
+    sb_printf(b, "%s", RESET);
+}
+
+static void live_render(sbuf *b, const listener_list *list, const int *rows, int nrows, int sel, int *scroll,
+                        int all, int hidden, seen_list *seen, const char *status) {
+    int w = wp_term_width(), h = wp_term_height();
+    if (w < 40) w = 80;
+    if (h < 12) h = 24;
+    time_t now = time(NULL);
+    long long now_ms = wp_clock_ms();
+    char t[16];
+    clock_now(t, sizeof t);
+    b->len = 0;
+    sb_printf(b, "\033[H");
+    sb_printf(b, "\n  %swhoport%s %slive  ·  %d port%s  ·  %s%s\033[K\n\n", BOLD, RESET, DIM, nrows, nrows == 1 ? "" : "s",
+              t, RESET);
+
+    int w_proj = 7, w_cmd = 7;
+    char proj[WP_PATH_MAX], cmd[WP_CMD_MAX], cell[WP_PATH_MAX], cell2[WP_CMD_MAX];
+    for (int r = 0; r < nrows; r++) {
+        project_of(&list->items[rows[r]], proj, sizeof proj);
+        command_of(&list->items[rows[r]], cmd, sizeof cmd);
+        if ((int)strlen(proj) > w_proj) w_proj = (int)strlen(proj);
+        if ((int)strlen(cmd) > w_cmd) w_cmd = (int)strlen(cmd);
+    }
+    if (w_proj > 30) w_proj = 30;
+    if (w_cmd > 36) w_cmd = 36;
+    int over = 43 + w_proj + w_cmd - (w - 1);
+    while (over > 0 && (w_proj > 12 || w_cmd > 14)) {
+        if (w_proj > 12 && (w_proj >= w_cmd || w_cmd <= 14)) w_proj--;
+        else w_cmd--;
+        over--;
+    }
+    sb_printf(b, "  %s  %-6s %-*s  %-*s  %7s  %9s  %8s%s\033[K\n", DIM, "PORT", w_proj, "PROJECT", w_cmd, "COMMAND",
+              "PID", "RUNNING", "MEMORY", RESET);
+
+    int body = h - 13; /* header 4, detail and keys 9 */
+    if (body < 3) body = 3;
+    if (sel < *scroll) *scroll = sel;
+    if (sel >= *scroll + body) *scroll = sel - body + 1;
+    if (*scroll > nrows - body) *scroll = nrows - body > 0 ? nrows - body : 0;
+    for (int r = *scroll; r < nrows && r < *scroll + body; r++) {
+        const listener_t *l = &list->items[rows[r]];
+        char up[32], mem[32], pid[16];
+        wp_format_duration(uptime_of(l, now), up, sizeof up);
+        wp_format_bytes(l->rss, mem, sizeof mem);
+        if (l->container[0]) snprintf(mem, sizeof mem, "-");
+        if (l->pid >= 0 && !l->container[0]) snprintf(pid, sizeof pid, "%d", l->pid);
+        else snprintf(pid, sizeof pid, "-");
+        project_of(l, proj, sizeof proj);
+        command_of(l, cmd, sizeof cmd);
+        if (l->pid < 0 && !l->container[0]) wp_copy(cmd, sizeof cmd, "(another user)");
+        fit(proj, w_proj, cell, sizeof cell);
+        fit(cmd, w_cmd, cell2, sizeof cell2);
+        long long fs = first_seen(seen, l, now_ms, 0);
+        int fresh = fs > 0 && now_ms - fs < LIVE_NEW_MS;
+        if (r == sel) {
+            sb_printf(b, "  %s›%s %s%-6d %-*s  %-*s  %7s  %9s  %8s%s\033[K\n", CYAN, RESET, C("7"), l->port, w_proj,
+                      cell, w_cmd, cell2, pid, up, mem, RESET);
+        } else {
+            sb_printf(b, "    %s%-6d%s %s%-*s%s  %-*s  %s%7s%s  %9s  %8s\033[K\n", fresh ? GREEN : BOLD, l->port, RESET,
+                      fresh ? GREEN : is_project(proj) ? CYAN : DIM, w_proj, cell, RESET, w_cmd, cell2, DIM, pid, RESET,
+                      up, mem);
+        }
+    }
+    if (!nrows) sb_printf(b, "    %sNo listening ports%s.%s\033[K\n", DIM, hidden ? " besides system services (press a)" : "", RESET);
+    for (int r = nrows - *scroll; r < body; r++) sb_printf(b, "\033[K\n");
+
+    /* Details of the selected row. */
+    sb_printf(b, "\033[K\n");
+    int dw = w - 14 > 20 ? w - 14 : 20;
+    if (nrows) {
+        const listener_t *l = &list->items[rows[sel]];
+        project_of(l, proj, sizeof proj);
+        char up[32], when[32] = "";
+        wp_format_duration(uptime_of(l, now), up, sizeof up);
+        if (l->started > 0) {
+            struct tm tm;
+            wp_localtime(l->started, &tm);
+            strftime(when, sizeof when, now - l->started < 86400 ? " since %H:%M" : " since %b %d", &tm);
+        }
+        if (l->pid < 0 && !l->container[0]) {
+            sb_printf(b, "  %sPort %d%s  belongs to another user.\033[K\n", BOLD, l->port, RESET);
+            sb_printf(b, "  %sRun whoport %s to see it.%s\033[K\n\033[K\n\033[K\n", DIM,
+#ifdef _WIN32
+                      "from an administrator terminal",
+#else
+                      "with sudo",
+#endif
+                      RESET);
+        } else if (l->container[0]) {
+            fit(l->container, dw, cell, sizeof cell);
+            sb_printf(b, "  %sPort %d%s  Docker container %s%s%s\033[K\n", BOLD, l->port, RESET, BOLD, cell, RESET);
+            fit(l->image, dw, cell, sizeof cell);
+            sb_printf(b, "  %sImage%s     %s\033[K\n", DIM, RESET, cell);
+        } else {
+            sb_printf(b, "  %sPort %d%s  %s%s%s %s(pid %d)%s\033[K\n", BOLD, l->port, RESET, BOLD, l->name, RESET, DIM,
+                      l->pid, RESET);
+            fit(l->command[0] ? l->command : "?", dw, cell, sizeof cell);
+            sb_printf(b, "  %sCommand%s   %s\033[K\n", DIM, RESET, cell);
+        }
+        if (l->pid >= 0 || l->container[0]) {
+            fit(proj, dw, cell, sizeof cell);
+            sb_printf(b, "  %sProject%s   %s%s%s\033[K\n", DIM, RESET, CYAN, cell, RESET);
+            sb_printf(b, "  %sRunning%s   %s%s%s%s  %sAddress%s %s\033[K\n", DIM, RESET, up, DIM, when, RESET, DIM,
+                      RESET, l->addr);
+        }
+    } else {
+        sb_printf(b, "\033[K\n\033[K\n\033[K\n\033[K\n");
+    }
+    sb_printf(b, "\033[K\n  ");
+    sb_fit(b, status, w - 3);
+    sb_printf(b, "\033[K\n");
+    sb_printf(b, "\033[K\n  %s↑↓%s select   %sk%s stop   %sK%s force stop   %sa%s %s   %sq%s quit\033[K", BOLD, RESET, BOLD,
+              RESET, BOLD, RESET, BOLD, RESET, all ? "hide system services" : "show all", BOLD, RESET);
+    sb_printf(b, "\033[J");
+}
+
+static void live_restore(void) {
+    wp_term_raw(0);
+    fputs("\033[?25h\033[?1049l", stdout);
+    fflush(stdout);
+}
+
+static int live_mode(int all) {
+    if (!wp_stdout_is_tty() || !wp_stdin_is_tty()) {
+        fprintf(stderr, "whoport: --live needs an interactive terminal\n");
+        return 2;
+    }
+    if (wp_term_raw(1) != 0) {
+        fprintf(stderr, "whoport: could not switch the terminal to interactive mode\n");
+        return 2;
+    }
+    atexit(live_restore);
+    fputs("\033[?1049h\033[?25l\033[2J", stdout);
+
+    listener_list list = {0};
+    seen_list seen = {0};
+    sbuf out = {0};
+    int *rows = NULL, nrows = 0, sel = 0, scroll = 0, sel_port = -1, sel_pid = -1, confirm = 0, initial = 1, force = 0;
+    in_live = 1;
+    char status[WP_CMD_MAX + WP_PATH_MAX + 256] = "";
+    long long next_refresh = 0, status_until = 0;
+    for (;;) {
+        long long now_ms = wp_clock_ms();
+        if (now_ms >= next_refresh) {
+            wp_list_free(&list);
+            if (snapshot(&list) != 0) memset(&list, 0, sizeof list);
+            int *grown = realloc(rows, (list.len + 1) * sizeof *rows);
+            if (grown) rows = grown;
+            nrows = 0;
+            int hidden = 0;
+            for (size_t i = 0; i < list.len; i++) {
+                if (find_port(&list, list.items[i].port) != &list.items[i]) continue;
+                if (shown(&list.items[i], all)) rows[nrows++] = (int)i;
+                else hidden++;
+                first_seen(&seen, &list.items[i], now_ms, initial);
+            }
+            (void)hidden;
+            initial = 0;
+            /* Keep the selection on the same server when rows move. */
+            for (int r = 0; r < nrows; r++)
+                if (list.items[rows[r]].port == sel_port && list.items[rows[r]].pid == sel_pid) sel = r;
+            if (sel >= nrows) sel = nrows ? nrows - 1 : 0;
+            next_refresh = now_ms + 1000;
+        }
+        if (status_until && now_ms >= status_until && !confirm) {
+            status[0] = '\0';
+            status_until = 0;
+        }
+        live_render(&out, &list, rows, nrows, sel, &scroll, all, 0, &seen, status);
+        fwrite(out.p, 1, out.len, stdout);
+        fflush(stdout);
+        if (nrows) {
+            sel_port = list.items[rows[sel]].port;
+            sel_pid = list.items[rows[sel]].pid;
+        }
+
+        long long wait = next_refresh - wp_clock_ms();
+        int key = wp_read_key(wait > 0 ? (int)wait : 0);
+        if (key == WP_KEY_NONE) continue;
+        if (confirm) {
+            confirm = 0;
+            if ((key == 'y' || key == 'Y') && nrows) {
+                listener_t victim = list.items[rows[sel]];
+                snprintf(status, sizeof status, "%sStopping port %d...%s", DIM, victim.port, RESET);
+                live_render(&out, &list, rows, nrows, sel, &scroll, all, 0, &seen, status);
+                fwrite(out.p, 1, out.len, stdout);
+                fflush(stdout);
+                stop_msg(&victim, force, status, sizeof status);
+                next_refresh = 0;
+            } else {
+                status[0] = '\0';
+            }
+            status_until = wp_clock_ms() + 5000;
+            continue;
+        }
+        switch (key) {
+            case 'q': case 'Q': case 3: case WP_KEY_ESC:
+                free(rows);
+                free(seen.items);
+                free(out.p);
+                wp_list_free(&list);
+                return 0;
+            case WP_KEY_UP: if (sel > 0) sel--; break;
+            case WP_KEY_DOWN: if (sel + 1 < nrows) sel++; break;
+            case WP_KEY_PGUP: sel = sel > 10 ? sel - 10 : 0; break;
+            case WP_KEY_PGDN: sel = sel + 10 < nrows ? sel + 10 : (nrows ? nrows - 1 : 0); break;
+            case 'a': case 'A': all = !all; next_refresh = 0; break;
+            case 'k': case 'K': case 'x':
+                if (nrows) {
+                    const listener_t *l = &list.items[rows[sel]];
+                    char what[WP_CMD_MAX];
+                    if (l->container[0]) snprintf(what, sizeof what, "container %s", l->container);
+                    else wp_short_command(l->command[0] ? l->command : l->name, home, what, sizeof what);
+                    snprintf(status, sizeof status, "%s%s %s%s%s%s on port %d? %sy%s%s/n%s", YELLOW, key == 'K' ? "Force stop" : "Stop", BOLD, what, RESET,
+                             YELLOW, l->port, BOLD, RESET, YELLOW, RESET);
+                    confirm = 1;
+                    force = key == 'K';
+                }
+                break;
+            default: break;
+        }
+        if (nrows) {
+            sel_port = list.items[rows[sel]].port;
+            sel_pid = list.items[rows[sel]].pid;
+        }
+    }
 }
 
 int main(int argc, char **argv) {
     int ports[MAX_QUERY], nports = 0;
-    int do_kill = 0, force = 0, json = 0, all = 0, free_mode = 0;
+    int do_kill = 0, force = 0, json = 0, all = 0, free_mode = 0, live = 0, watch = 0, wait = 0, timeout = 60;
     wp_platform_init();
     color = wp_stdout_is_tty() && !getenv("NO_COLOR");
 
@@ -388,6 +886,21 @@ int main(int argc, char **argv) {
             force = 1;
         } else if (!strcmp(a, "--free")) {
             free_mode = 1;
+        } else if (!strcmp(a, "-l") || !strcmp(a, "--live")) {
+            live = 1;
+        } else if (!strcmp(a, "-w") || !strcmp(a, "--watch")) {
+            watch = 1;
+        } else if (!strcmp(a, "--wait")) {
+            wait = 1;
+        } else if (!strcmp(a, "--timeout")) {
+            char *end = NULL;
+            long t = i + 1 < argc ? strtol(argv[i + 1], &end, 10) : -1;
+            if (i + 1 >= argc || !end || *end || t < 0 || t > 86400) {
+                fprintf(stderr, "whoport: --timeout needs a number of seconds (0 = wait forever)\n");
+                return 2;
+            }
+            timeout = (int)t;
+            i++;
         } else if (!strcmp(a, "-a") || !strcmp(a, "--all")) {
             all = 1;
         } else if (!strcmp(a, "-j") || !strcmp(a, "--json")) {
@@ -409,6 +922,22 @@ int main(int argc, char **argv) {
         fprintf(stderr, "whoport: --kill needs a port, e.g. whoport 3000 --kill\n");
         return 2;
     }
+    if (live + watch + wait + free_mode + do_kill > 1) {
+        fprintf(stderr, "whoport: use only one of --live, --watch, --wait, --free and --kill\n");
+        return 2;
+    }
+    if (json && (live || watch || wait)) {
+        fprintf(stderr, "whoport: --json does not work with --live, --watch or --wait\n");
+        return 2;
+    }
+    if (wait && !nports) {
+        fprintf(stderr, "whoport: --wait needs a port, e.g. whoport --wait 5432\n");
+        return 2;
+    }
+    if (live && nports) {
+        fprintf(stderr, "whoport: --live shows every port; leave out the port numbers\n");
+        return 2;
+    }
     if (json) color = 0;
     if (free_mode && (do_kill || nports > 1)) {
         fprintf(stderr, "whoport: --free takes at most one start port, e.g. whoport --free 3000\n");
@@ -416,6 +945,9 @@ int main(int argc, char **argv) {
     }
 
     home = wp_home();
+    if (live) return live_mode(all);
+    if (watch) return watch_mode(ports, nports, all);
+    if (wait) return wait_mode(ports, nports, timeout);
 
     listener_list list = {0};
     if (wp_collect(&list) != 0) {
@@ -443,44 +975,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    /* Ports published by Docker belong to a container, not to the Docker
-     * daemon or proxy process that holds the socket. */
-    wp_container *containers = NULL;
-    size_t n_containers = 0;
-    if (wp_docker_containers(&containers, &n_containers) == 0) {
-        for (size_t k = 0; k < n_containers; k++) {
-            int matched = 0;
-            for (size_t i = 0; i < list.len; i++) {
-                if (containers[k].port != list.items[i].port) continue;
-                listener_t *l = &list.items[i];
-                wp_copy(l->container, sizeof l->container, containers[k].name);
-                wp_copy(l->image, sizeof l->image, containers[k].image);
-                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
-                l->started = containers[k].started > 0   ? containers[k].started
-                             : containers[k].created > 0 ? containers[k].created
-                                                         : -1;
-                l->rss = -1;
-                matched = 1;
-            }
-            /* Without a userland proxy Docker forwards ports in the kernel, so
-             * no process holds the socket. Show the container anyway. */
-            if (!matched) {
-                listener_t *l = wp_list_push(&list);
-                if (!l) break;
-                l->port = containers[k].port;
-                wp_copy(l->addr, sizeof l->addr, "0.0.0.0");
-                wp_copy(l->container, sizeof l->container, containers[k].name);
-                wp_copy(l->image, sizeof l->image, containers[k].image);
-                wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
-                l->started = containers[k].started > 0   ? containers[k].started
-                             : containers[k].created > 0 ? containers[k].created
-                                                         : -1;
-                l->rss = -1;
-            }
-        }
-        free(containers);
-        wp_list_sort_dedupe(&list);
-    }
+    attach_containers(&list);
 
     if (!nports) {
         if (json) print_json(&list, now);
