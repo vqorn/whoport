@@ -25,12 +25,15 @@ typedef struct {
     char container[128];       /* Docker container publishing this port */
     char image[128];
     char compose_dir[WP_PATH_MAX]; /* Compose project folder of that container */
+    char ccommand[256];        /* command inside that container */
 } listener_t;
 
 typedef struct {
     int port;                  /* published TCP port on the host */
     char name[128];
     char image[128];
+    char command[256];         /* "Command": what runs inside */
+    char ip[64];               /* host address the port is published on */
     char workdir[WP_PATH_MAX]; /* com.docker.compose.project.working_dir */
     char service[128];         /* com.docker.compose.service */
     long long created;         /* seconds since the epoch, 0 if unknown */
@@ -95,6 +98,7 @@ int wp_is_loopback(const char *addr);
 int wp_is_path(const char *s);
 int wp_is_system_dir(const char *dir);
 int wp_is_os_noise(const listener_t *l);
+int wp_is_exposed(const char *addr); /* 1 if reachable from other machines (0.0.0.0, ::, a LAN address) */
 /* What runs there: "Next.js", "PostgreSQL"... Empty when unknown. Returns 1
  * if it speaks HTTP (worth opening in a browser), 0 if not, -1 if unknown. */
 int wp_detect_app(const listener_t *l, char *out, size_t size);

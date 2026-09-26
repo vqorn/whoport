@@ -167,7 +167,8 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
     if (!expect(&j, '[')) return -1;
     if (expect(&j, ']')) return 0;
     for (;;) {
-        char name[128] = "", image[128] = "", workdir[WP_PATH_MAX] = "", service[128] = "";
+        char name[128] = "", image[128] = "", workdir[WP_PATH_MAX] = "", service[128] = "", command[256] = "";
+        char ips[64][64];
         long created = 0;
         long ports[64];
         int nports = 0;
@@ -196,6 +197,8 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                     }
                 } else if (!strcmp(key, "Created") && peek(&j) >= '0' && peek(&j) <= '9') {
                     if (!js_number(&j, &created)) goto fail;
+                } else if (!strcmp(key, "Command") && peek(&j) == '"') {
+                    if (!js_string(&j, command, sizeof command)) goto fail;
                 } else if (!strcmp(key, "Image") && peek(&j) == '"') {
                     if (!js_string(&j, image, sizeof image)) goto fail;
                 } else if (!strcmp(key, "Ports") && peek(&j) == '[') {
@@ -203,7 +206,7 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                     if (!expect(&j, ']')) {
                         for (;;) {
                             long pub = 0;
-                            char type[16] = "";
+                            char type[16] = "", ip[64] = "";
                             if (peek(&j) != '{') {
                                 if (!js_skip(&j, 0)) goto fail;
                             } else if (expect(&j, '{') && !expect(&j, '}')) {
@@ -213,6 +216,8 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                                     char next = peek(&j);
                                     if (!strcmp(pk, "PublicPort") && next >= '0' && next <= '9') {
                                         if (!js_number(&j, &pub)) goto fail;
+                                    } else if (!strcmp(pk, "IP") && next == '"') {
+                                        if (!js_string(&j, ip, sizeof ip)) goto fail;
                                     } else if (!strcmp(pk, "Type") && next == '"') {
                                         if (!js_string(&j, type, sizeof type)) goto fail;
                                     } else if (!js_skip(&j, 0)) {
@@ -224,9 +229,15 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
                                 }
                             }
                             if (pub > 0 && pub <= 65535 && !strcmp(type, "tcp") && nports < 64) {
-                                int dup = 0;
-                                for (int k = 0; k < nports; k++) dup |= ports[k] == pub;
-                                if (!dup) ports[nports++] = pub;
+                                int dup = -1;
+                                for (int k = 0; k < nports; k++)
+                                    if (ports[k] == pub) dup = k;
+                                if (dup < 0) {
+                                    wp_copy(ips[nports], sizeof ips[0], ip);
+                                    ports[nports++] = pub;
+                                } else if (wp_is_exposed(ip) && !wp_is_exposed(ips[dup])) {
+                                    wp_copy(ips[dup], sizeof ips[0], ip); /* 0.0.0.0 wins over 127.0.0.1 */
+                                }
                             }
                             if (expect(&j, ',')) continue;
                             if (!expect(&j, ']')) goto fail;
@@ -270,6 +281,8 @@ int wp_docker_parse(const char *json, size_t len, wp_container **out, size_t *co
             wp_copy(e->image, sizeof e->image, image);
             wp_copy(e->workdir, sizeof e->workdir, workdir);
             wp_copy(e->service, sizeof e->service, service);
+            wp_copy(e->command, sizeof e->command, command);
+            wp_copy(e->ip, sizeof e->ip, ips[k]);
             e->created = created;
         }
         if (expect(&j, ',')) continue;

@@ -71,6 +71,7 @@ static void usage(FILE *f) {
             "  docker compose up -d && whoport --wait 5432 && npm run dev\n"
             "\n"
             "Docker containers are shown by name; --kill stops the container.\n"
+            "⚠ marks your servers and databases that other machines can reach (0.0.0.0).\n"
             "Exit status: 0 if a queried port is in use, 1 if it is free, 2 on errors.\n"
             "Processes of other users are only visible with sudo (Linux, macOS)\n"
             "or from an administrator terminal (Windows).\n"
@@ -129,6 +130,16 @@ static void app_of(const listener_t *l, char *out, size_t size) {
 
 #define APP_MAX 14
 
+/* Worth a warning: your own server or a database, reachable from other
+ * machines. Apps like Spotify or Discord open ports on purpose. */
+static int warn_exposed(const listener_t *l) {
+    if (!wp_is_exposed(l->addr) || (l->pid < 0 && !l->container[0])) return 0;
+    char app[32], proj[WP_PATH_MAX];
+    if (wp_detect_app(l, app, sizeof app) == 0) return 1;
+    project_of(l, proj, sizeof proj);
+    return is_project(proj);
+}
+
 static long long uptime_of(const listener_t *l, time_t now) {
     return l->started > 0 ? (long long)now - l->started : -1;
 }
@@ -164,7 +175,8 @@ static void print_json(const listener_list *list, time_t now) {
     for (size_t i = 0; i < list->len; i++) {
         const listener_t *l = &list->items[i];
         char project[WP_PATH_MAX];
-        if (l->pid >= 0 && l->cwd[0]) wp_find_project_root(l->cwd, home, project, sizeof project);
+        if (l->container[0]) wp_copy(project, sizeof project, l->compose_dir);
+        else if (l->pid >= 0 && l->cwd[0]) wp_find_project_root(l->cwd, home, project, sizeof project);
         else project[0] = '\0';
         printf("%s\n  {\"port\": %d, \"address\": ", i ? "," : "", l->port);
         json_string(l->addr);
@@ -186,8 +198,8 @@ static void print_json(const listener_list *list, time_t now) {
         printf(", \"app\": ");
         if (app[0]) json_string(app);
         else printf("null");
-        printf(", \"uptime_seconds\": %lld, \"memory_bytes\": %lld, \"restricted\": %s, \"container\": ",
-               uptime_of(l, now), l->rss, l->restricted ? "true" : "false");
+        printf(", \"uptime_seconds\": %lld, \"memory_bytes\": %lld, \"restricted\": %s, \"exposed\": %s, \"container\": ",
+               uptime_of(l, now), l->rss, l->restricted ? "true" : "false", wp_is_exposed(l->addr) ? "true" : "false");
         if (l->container[0]) {
             printf("{\"name\": ");
             json_string(l->container);
@@ -257,7 +269,7 @@ static void print_table(const listener_list *list, time_t now, int all) {
     printf("\n  %s%-6s %-*s  ", DIM, "PORT", w_proj, "PROJECT");
     if (w_app) printf("%-*s  ", w_app, "APP");
     printf("%-*s  %7s  %9s  %8s%s\n", w_cmd, "COMMAND", "PID", "RUNNING", "MEMORY", RESET);
-    int stale = 0, stale_port = 0;
+    int stale = 0, stale_port = 0, exposed = 0;
     for (size_t i = 0; i < list->len; i++) {
         const listener_t *l = &list->items[i];
         if (!shown(l, all)) continue;
@@ -284,7 +296,8 @@ static void print_table(const listener_list *list, time_t now, int all) {
             stale++;
             stale_port = l->port;
         }
-        printf("  %s%-6d%s ", BOLD, l->port, RESET);
+        if (warn_exposed(l)) exposed++;
+        printf("  %s%-5d%s%s%s ", BOLD, l->port, YELLOW, warn_exposed(l) ? "⚠" : " ", RESET);
         fit(proj, w_proj, cell, sizeof cell);
         printf("%s%-*s%s  ", is_project(proj) ? CYAN : DIM, w_proj, cell, RESET);
         if (w_app) {
@@ -300,6 +313,9 @@ static void print_table(const listener_list *list, time_t now, int all) {
     printf("\n");
     if (stale == 1) printf("  %sRunning for more than a day. Stop it with: whoport %d --kill%s\n\n", DIM, stale_port, RESET);
     else if (stale > 1) printf("  %s%d servers have been running for more than a day.%s\n\n", DIM, stale, RESET);
+    if (exposed)
+        printf("  %s⚠ %d server%s reachable from your network.%s %sUse 127.0.0.1 unless others need access.%s\n",
+               YELLOW, exposed, exposed == 1 ? " is" : "s are", RESET, DIM, RESET);
     if (restricted)
         printf("  %s* Folder, uptime and memory need %s.%s\n", DIM,
 #ifdef _WIN32
@@ -315,7 +331,22 @@ static void print_table(const listener_list *list, time_t now, int all) {
         if (others) printf(" %d port%s of other users", others, others == 1 ? "" : "s");
         printf(". Show them with: whoport --all%s\n", RESET);
     }
-    if (restricted || noise || others) printf("\n");
+    if (restricted || noise || others || exposed) printf("\n");
+}
+
+static void print_address(const listener_t *l) {
+    if (warn_exposed(l)) {
+        char app[32];
+        int db = wp_detect_app(l, app, sizeof app) == 0;
+        printf("  %-9s %s %s⚠ reachable from your network%s\n", "Address", l->addr, YELLOW, RESET);
+        printf("  %-9s %s%s%s\n", "", DIM,
+               db ? "Databases should listen on 127.0.0.1 only (Docker: \"127.0.0.1:5432:5432\")."
+                  : "Anyone on your Wi-Fi can open it. Listen on 127.0.0.1 unless that is what you want.",
+               RESET);
+    } else {
+        printf("  %-9s %s %s%s%s\n", "Address", l->addr, DIM,
+               wp_is_loopback(l->addr) ? "(only this computer)" : "(reachable from your network)", RESET);
+    }
 }
 
 static void print_detail(const listener_t *l, time_t now) {
@@ -344,7 +375,7 @@ static void print_detail(const listener_t *l, time_t now) {
         if (app[0]) printf("  %-9s %s%s%s\n", "App", MAGENTA, app, RESET);
         if (l->compose_dir[0]) printf("  %-9s %s%s%s\n", "Project", CYAN, project, RESET);
         if (l->started > 0) printf("  %-9s %s %s\n", "Running", up, when);
-        printf("  %-9s %s\n", "Address", l->addr);
+        print_address(l);
         printf("\n  %sStop it: whoport %d --kill   (stops the container)%s\n\n", DIM, l->port, RESET);
         return;
     }
@@ -359,8 +390,7 @@ static void print_detail(const listener_t *l, time_t now) {
         printf("  %-9s %s %s%s%s\n", "Running", up, DIM, when, RESET);
         printf("  %-9s %s\n", "Memory", mem);
     }
-    printf("  %-9s %s %s%s%s\n", "Address", l->addr, DIM,
-           wp_is_loopback(l->addr) ? "(only this computer)" : "(reachable from your network)", RESET);
+    print_address(l);
     printf("\n  %sStop it: whoport %d --kill%s\n\n", DIM, l->port, RESET);
 }
 
@@ -435,6 +465,8 @@ static void attach_containers(listener_list *list) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                wp_copy(l->ccommand, sizeof l->ccommand, containers[k].command);
+                if (containers[k].ip[0]) wp_copy(l->addr, sizeof l->addr, containers[k].ip);
                 l->started = containers[k].started > 0   ? containers[k].started
                              : containers[k].created > 0 ? containers[k].created
                                                          : -1;
@@ -451,6 +483,8 @@ static void attach_containers(listener_list *list) {
                 wp_copy(l->container, sizeof l->container, containers[k].name);
                 wp_copy(l->image, sizeof l->image, containers[k].image);
                 wp_copy(l->compose_dir, sizeof l->compose_dir, containers[k].workdir);
+                wp_copy(l->ccommand, sizeof l->ccommand, containers[k].command);
+                if (containers[k].ip[0]) wp_copy(l->addr, sizeof l->addr, containers[k].ip);
                 l->started = containers[k].started > 0   ? containers[k].started
                              : containers[k].created > 0 ? containers[k].created
                                                          : -1;
@@ -912,12 +946,14 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
         long long fs = first_seen(seen, l, now_ms, 0);
         int fresh = fs > 0 && now_ms - fs < LIVE_NEW_MS;
         if (r == sel) {
-            sb_printf(b, "  %s›%s %s%-6d %-*s  %-*s%-*s  %7s  %9s  %8s%s\033[K\n", CYAN, RESET, C("7"), l->port, w_proj,
-                      cell, w_appcol, w_app ? cell3 : "", w_cmd, cell2, pid, up, mem, RESET);
+            sb_printf(b, "  %s›%s %s%-5d%s %-*s  %-*s%-*s  %7s  %9s  %8s%s\033[K\n", CYAN, RESET, C("7"), l->port,
+                      warn_exposed(l) ? "⚠" : " ", w_proj, cell, w_appcol, w_app ? cell3 : "", w_cmd, cell2, pid, up, mem,
+                      RESET);
         } else {
-            sb_printf(b, "    %s%-6d%s %s%-*s%s  %s%-*s%s%-*s  %s%7s%s  %9s  %8s\033[K\n", fresh ? GREEN : BOLD, l->port,
-                      RESET, fresh ? GREEN : is_project(proj) ? CYAN : DIM, w_proj, cell, RESET, MAGENTA, w_appcol,
-                      w_app ? cell3 : "", RESET, w_cmd, cell2, DIM, pid, RESET, up, mem);
+            sb_printf(b, "    %s%-5d%s%s%s %s%-*s%s  %s%-*s%s%-*s  %s%7s%s  %9s  %8s\033[K\n", fresh ? GREEN : BOLD,
+                      l->port, YELLOW, warn_exposed(l) ? "⚠" : " ", RESET, fresh ? GREEN : is_project(proj) ? CYAN : DIM,
+                      w_proj, cell, RESET, MAGENTA, w_appcol, w_app ? cell3 : "", RESET, w_cmd, cell2, DIM, pid, RESET,
+                      up, mem);
         }
     }
     if (!nrows) sb_printf(b, "    %sNo listening ports%s.%s\033[K\n", DIM, hidden ? " besides system services (press a)" : "", RESET);
@@ -962,8 +998,8 @@ static void live_render(sbuf *b, const listener_list *list, const int *rows, int
         if (l->pid >= 0 || l->container[0]) {
             fit(proj, dw, cell, sizeof cell);
             sb_printf(b, "  %sProject%s   %s%s%s\033[K\n", DIM, RESET, CYAN, cell, RESET);
-            sb_printf(b, "  %sRunning%s   %s%s%s%s  %sAddress%s %s\033[K\n", DIM, RESET, up, DIM, when, RESET, DIM,
-                      RESET, l->addr);
+            sb_printf(b, "  %sRunning%s   %s%s%s%s  %sAddress%s %s%s%s%s\033[K\n", DIM, RESET, up, DIM, when, RESET, DIM,
+                      RESET, l->addr, YELLOW, warn_exposed(l) ? "  ⚠ reachable from your network" : "", RESET);
         }
     } else {
         sb_printf(b, "\033[K\n\033[K\n\033[K\n\033[K\n");

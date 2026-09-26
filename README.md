@@ -9,7 +9,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Linux | macOS | Windows](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)
 
-<img src="docs/demo.gif" alt="node fails with EADDRINUSE, whoport shows which project holds port 3000, stops it, and the server starts" width="760">
+<img src="docs/demo.gif" alt="whoport lists every port with its project folder and app (Next.js, Vite, PostgreSQL, Redis), warns about a database reachable from the network, then the live view: a new server lights up green, and p stops the whole webshop project" width="760">
 
 </div>
 
@@ -21,6 +21,7 @@ You know the drill: `lsof -i :3000`, squint at a PID, `ps`, hunt for the termina
 
 - 📁 **Shows the project folder**, not just a PID: it walks up from the process's working directory to the nearest `.git`, `package.json`, `Cargo.toml`, `go.mod` and friends
 - 🏷️ **Knows what runs there**: Next.js, Vite, Django, PostgreSQL, Redis and 60 more, from the command line or the Docker image
+- ⚠️ **Warns when your database is open to the network**: Docker publishes on `0.0.0.0` by default, so anyone on the same Wi-Fi can reach your Postgres
 - ⏱️ **Uptime and memory** for every server, plus a hint when something has been running for days
 - 🐳 **Knows your Docker containers**: shows the container name and its Compose project folder instead of `com.docker.backend`
 - 🔪 **`whoport 3000 --kill`** stops it politely (SIGTERM), waits, and confirms the port is free. For a container, it stops the container, not Docker
@@ -126,6 +127,19 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 | `p` | stop every server of its project |
 | `a` | show or hide system services |
 | `q` | quit |
+
+### Reachable from the network
+
+A server listening on `0.0.0.0` or `::` accepts connections from every machine that can reach yours: the café Wi-Fi, the office LAN. For a dev server that is sometimes what you want, for a database it almost never is. And Docker publishes ports on `0.0.0.0` unless you say otherwise.
+
+`whoport` marks your own servers and databases that are reachable like that with `⚠` and tells you how to fix it:
+
+```
+  Address   0.0.0.0 ⚠ reachable from your network
+            Databases should listen on 127.0.0.1 only (Docker: "127.0.0.1:5432:5432").
+```
+
+Apps like Spotify or Discord open such ports on purpose, so they are not flagged. `--json` has `"exposed": true` for every port that is reachable from outside.
 
 ### Stop a whole project
 
