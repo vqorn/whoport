@@ -1,6 +1,6 @@
 # whoport: make, make test, sudo make install
 # Cross-compile for Windows from Linux: make CC=x86_64-w64-mingw32-gcc OS=Windows_NT
-VERSION ?= 1.3.0
+VERSION ?= 1.4.0
 PREFIX ?= /usr/local
 CC ?= cc
 CFLAGS ?= -O2
@@ -10,7 +10,7 @@ ifeq ($(OS),Windows_NT)
   EXE = .exe
   # Windows headers are not -Wpedantic clean, and MinGW has no sanitizers.
   WARN = -std=gnu11 -Wall -Wextra -Wshadow -Wformat=2 -Wno-format-nonliteral
-  LDLIBS = -liphlpapi -lws2_32 -lpsapi -lntdll
+  LDLIBS = -liphlpapi -lws2_32 -lpsapi -lntdll -lshell32
   SANITIZE ?=
 else
   EXE =

@@ -20,11 +20,14 @@ Error: listen EADDRINUSE: address already in use :::3000
 You know the drill: `lsof -i :3000`, squint at a PID, `ps`, hunt for the terminal tab you forgot about. `whoport` answers the real question directly: **which project** is that, how long has it been running, and do you want it gone.
 
 - 📁 **Shows the project folder**, not just a PID: it walks up from the process's working directory to the nearest `.git`, `package.json`, `Cargo.toml`, `go.mod` and friends
+- 🏷️ **Knows what runs there**: Next.js, Vite, Django, PostgreSQL, Redis and 60 more, from the command line or the Docker image
 - ⏱️ **Uptime and memory** for every server, plus a hint when something has been running for days
 - 🐳 **Knows your Docker containers**: shows the container name and its Compose project folder instead of `com.docker.backend`
 - 🔪 **`whoport 3000 --kill`** stops it politely (SIGTERM), waits, and confirms the port is free. For a container, it stops the container, not Docker
 - 🧹 **No noise**: operating system services are hidden (`--all` shows them)
-- 📺 **`whoport --live`**: a live view like `htop`, just for ports. Pick a row with the arrow keys, press `k` to stop it
+- 📺 **`whoport --live`**: a live view like `htop`, just for ports. Pick a row with the arrow keys, `o` opens it in the browser, `k` stops it
+- 🧹 **`whoport stop myapp`** stops everything of a project at once: dev server, API and its Docker containers
+- 🌐 **`whoport open 5173`** opens it in your browser
 - ⏳ **`whoport --wait 5432`** waits until your database is up: `docker compose up -d && whoport --wait 5432 && npm run dev`
 - 👀 **`whoport --watch`** prints a line whenever a port opens or closes
 - 🔎 **`whoport --free`** prints the next free port, e.g. `PORT=$(whoport --free 3000) npm run dev`
@@ -70,9 +73,12 @@ make && sudo make install
 whoport                 # every listening port
 whoport 3000            # who is on port 3000?
 whoport 3000 5173       # several at once (":3000" works too)
-whoport 3000 --kill     # stop it
+whoport 3000 --kill     # stop it (also: whoport stop 3000)
 whoport 3000 --kill --force
-whoport --live          # live view: arrow keys to select, k to stop, q to quit
+whoport open 5173       # open http://localhost:5173 in the browser
+whoport stop            # stop every server of the project you are in
+whoport stop fontia     # ... or of a project by folder name or path
+whoport --live          # live view: arrow keys to select, o open, k stop, p stop project, q quit
 whoport --watch         # print a line whenever a port opens or closes (or: whoport --watch 3000)
 whoport --wait 5432     # wait until something listens on 5432 (--timeout 60 by default)
 whoport --free          # first free port from 3000 (or: whoport --free 8080)
@@ -114,10 +120,30 @@ Ports published by Docker usually belong to `docker-proxy` or `com.docker.backen
 | Key | |
 |---|---|
 | `↑` `↓` | select a port |
+| `o` | open it in the browser |
 | `k` | stop it (asks first) |
 | `K` | force stop |
+| `p` | stop every server of its project |
 | `a` | show or hide system services |
 | `q` | quit |
+
+### Stop a whole project
+
+```
+$ whoport stop fontia
+
+  ~/Fontia: 5 servers
+
+    3000   Next.js      docker fontia-frontend-1
+    5433   PostgreSQL   docker fontia-postgres-1
+    6379   Redis        docker fontia-redis-1
+    8000                docker fontia-api-1
+    9000   MinIO        docker fontia-minio-1
+
+  Stop all of them? [y/N]
+```
+
+A project is the folder a server runs in (walking up to the nearest `.git`, `package.json` and friends) or the folder of its Docker Compose file. `whoport stop` without a name uses the project you are in. `--yes` skips the question, for scripts.
 
 ### Watch
 

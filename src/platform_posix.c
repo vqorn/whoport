@@ -15,6 +15,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <termios.h>
 
@@ -92,6 +94,33 @@ int wp_read_key(int timeout_ms) {
         return c2 == '5' ? WP_KEY_PGUP : WP_KEY_PGDN;
     }
     return WP_KEY_NONE;
+}
+
+int wp_open_url(const char *url) {
+#ifdef __APPLE__
+    const char *opener = "open";
+#else
+    const char *opener = "xdg-open";
+#endif
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid == 0) {
+        int null = open("/dev/null", O_RDWR);
+        if (null >= 0) {
+            dup2(null, STDIN_FILENO);
+            dup2(null, STDOUT_FILENO);
+            dup2(null, STDERR_FILENO);
+        }
+        execlp(opener, opener, url, (char *)NULL);
+        _exit(127);
+    }
+    int status = 0;
+    if (waitpid(pid, &status, 0) < 0) return -1;
+    return WIFEXITED(status) && WEXITSTATUS(status) == 0 ? 0 : -1;
+}
+
+int wp_getcwd(char *out, size_t size) {
+    return getcwd(out, size) ? 0 : -1;
 }
 
 const char *wp_home(void) {

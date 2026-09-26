@@ -79,6 +79,93 @@ int wp_is_os_noise(const listener_t *l) {
     return 0;
 }
 
+typedef struct {
+    const char *needle; /* matched as a whole word, case-insensitive */
+    const char *name;
+    int http;
+} app_rule;
+
+/* Docker images. */
+static const app_rule IMAGE_RULES[] = {
+    {"pgvector", "PostgreSQL", 0}, {"postgis", "PostgreSQL", 0}, {"timescaledb", "PostgreSQL", 0},
+    {"postgres", "PostgreSQL", 0}, {"redis", "Redis", 0}, {"valkey", "Valkey", 0}, {"mysql", "MySQL", 0},
+    {"mariadb", "MariaDB", 0}, {"mongo", "MongoDB", 0}, {"memcached", "Memcached", 0}, {"rabbitmq", "RabbitMQ", 1},
+    {"kafka", "Kafka", 0}, {"minio", "MinIO", 1}, {"elasticsearch", "Elasticsearch", 1},
+    {"opensearch", "OpenSearch", 1}, {"clickhouse", "ClickHouse", 1}, {"qdrant", "Qdrant", 1},
+    {"meilisearch", "Meilisearch", 1}, {"mailpit", "Mailpit", 1}, {"mailhog", "MailHog", 1},
+    {"localstack", "LocalStack", 1}, {"grafana", "Grafana", 1}, {"prometheus", "Prometheus", 1},
+    {"keycloak", "Keycloak", 1}, {"adminer", "Adminer", 1}, {"pgadmin4", "pgAdmin", 1}, {"n8n", "n8n", 1},
+    {"ollama", "Ollama", 1}, {"text-embeddings-inference", "Embeddings", 1}, {"nginx", "nginx", 1},
+    {"httpd", "Apache", 1}, {"traefik", "Traefik", 1}, {"caddy", "Caddy", 1}, {"wordpress", "WordPress", 1},
+    {"jupyter", "Jupyter", 1}, {"node", "Node.js", 1}, {"python", "Python", -1},
+    {NULL, NULL, 0},
+};
+
+/* Command lines and process names, most specific first. */
+static const app_rule COMMAND_RULES[] = {
+    {"next-server", "Next.js", 1}, {"next dev", "Next.js", 1}, {"next start", "Next.js", 1}, {"nuxt", "Nuxt", 1},
+    {"nuxi", "Nuxt", 1}, {"astro", "Astro", 1}, {"remix", "Remix", 1}, {"svelte-kit", "SvelteKit", 1},
+    {"storybook", "Storybook", 1}, {"vite", "Vite", 1}, {"react-scripts", "Create React App", 1},
+    {"ng serve", "Angular", 1}, {"webpack", "webpack", 1}, {"gatsby", "Gatsby", 1}, {"docusaurus", "Docusaurus", 1},
+    {"parcel", "Parcel", 1}, {"expo", "Expo", 1}, {"nest start", "NestJS", 1}, {"wrangler", "Wrangler", 1},
+    {"vercel dev", "Vercel", 1}, {"netlify dev", "Netlify", 1}, {"firebase", "Firebase", 1},
+    {"supabase", "Supabase", 1}, {"runserver", "Django", 1}, {"uvicorn", "Uvicorn", 1},
+    {"gunicorn", "Gunicorn", 1}, {"hypercorn", "Hypercorn", 1}, {"flask", "Flask", 1},
+    {"streamlit", "Streamlit", 1}, {"gradio", "Gradio", 1}, {"jupyter-lab", "Jupyter", 1},
+    {"jupyter-notebook", "Jupyter", 1}, {"jupyter", "Jupyter", 1}, {"http.server", "http.server", 1},
+    {"rails server", "Rails", 1}, {"puma", "Puma", 1}, {"artisan serve", "Laravel", 1}, {"php -s", "PHP", 1},
+    {"hugo", "Hugo", 1}, {"jekyll", "Jekyll", 1}, {"spring-boot", "Spring Boot", 1}, {"quarkus", "Quarkus", 1},
+    {"code-server", "code-server", 1}, {"ollama", "Ollama", 1}, {"lm studio", "LM Studio", 1},
+    {"postgres", "PostgreSQL", 0}, {"postmaster", "PostgreSQL", 0}, {"redis-server", "Redis", 0},
+    {"valkey-server", "Valkey", 0}, {"mysqld", "MySQL", 0}, {"mariadbd", "MariaDB", 0}, {"mongod", "MongoDB", 0},
+    {"memcached", "Memcached", 0}, {"nginx", "nginx", 1}, {"httpd", "Apache", 1}, {"caddy", "Caddy", 1},
+    {"deno", "Deno", 1}, {"bun", "Bun", 1}, {"nodemon", "Node.js", 1}, {"node", "Node.js", 1},
+    {NULL, NULL, 0},
+};
+
+static int word_char(char c) {
+    return isalnum((unsigned char)c) || c == '_';
+}
+
+/* Case-insensitive search for needle as a whole word ("vite" matches
+ * "node_modules/.bin/vite --port 5173" but not "vitest"). */
+static int has_word(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    for (const char *p = hay; *p; p++) {
+        if (strncasecmp(p, needle, n) != 0) continue;
+        if (p > hay && word_char(p[-1])) continue;
+        if (word_char(p[n])) continue;
+        return 1;
+    }
+    return 0;
+}
+
+int wp_detect_app(const listener_t *l, char *out, size_t size) {
+    out[0] = '\0';
+    if (l->container[0]) {
+        /* "ghcr.io/org/postgres:16" -> look at the name, not the registry. */
+        const char *image = l->image, *slash = strrchr(image, '/');
+        char name[128];
+        wp_copy(name, sizeof name, slash ? slash + 1 : image);
+        char *colon = strchr(name, ':');
+        if (colon) *colon = '\0';
+        for (const app_rule *r = IMAGE_RULES; r->needle; r++)
+            if (has_word(name, r->needle)) {
+                wp_copy(out, size, r->name);
+                return r->http;
+            }
+        return -1;
+    }
+    char hay[WP_CMD_MAX + 80];
+    snprintf(hay, sizeof hay, "%s %s", l->command, l->name);
+    for (const app_rule *r = COMMAND_RULES; r->needle; r++)
+        if (has_word(hay, r->needle)) {
+            wp_copy(out, size, r->name);
+            return r->http;
+        }
+    return -1;
+}
+
 static int is_wildcard(const char *addr) {
     return strcmp(addr, "0.0.0.0") == 0 || strcmp(addr, "::") == 0 || strcmp(addr, "*") == 0;
 }

@@ -252,6 +252,39 @@ static void test_docker(void) {
         CHECK_STR(c[0].workdir, "");
     }
     free(c);
+    {
+        listener_t l;
+        char app[32];
+        memset(&l, 0, sizeof l);
+        wp_copy(l.command, sizeof l.command, "node /home/ana/shop/node_modules/.bin/next dev");
+        wp_copy(l.name, sizeof l.name, "node");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), 1); CHECK_STR(app, "Next.js");
+        wp_copy(l.command, sizeof l.command, "node node_modules/.bin/vite --port 5173");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Vite");
+        wp_copy(l.command, sizeof l.command, "node node_modules/.bin/vitest --ui");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Node.js");
+        wp_copy(l.command, sizeof l.command, "python3 manage.py runserver 8000");
+        wp_copy(l.name, sizeof l.name, "python3");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Django");
+        wp_copy(l.command, sizeof l.command, "/usr/lib/postgresql/16/bin/postgres -D /var/lib/postgresql");
+        wp_copy(l.name, sizeof l.name, "postgres");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), 0); CHECK_STR(app, "PostgreSQL");
+        wp_copy(l.command, sizeof l.command, "");
+        wp_copy(l.name, sizeof l.name, "postgres.exe");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "PostgreSQL");
+        wp_copy(l.command, sizeof l.command, "./server --port 9000");
+        wp_copy(l.name, sizeof l.name, "server");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), -1); CHECK_STR(app, "");
+        wp_copy(l.container, sizeof l.container, "fontia-postgres-1");
+        wp_copy(l.image, sizeof l.image, "pgvector/pgvector:pg16");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), 0); CHECK_STR(app, "PostgreSQL");
+        wp_copy(l.image, sizeof l.image, "ghcr.io/huggingface/text-embeddings-inference:cpu-1.7");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Embeddings");
+        wp_copy(l.image, sizeof l.image, "minio/minio:latest");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), 1); CHECK_STR(app, "MinIO");
+        wp_copy(l.image, sizeof l.image, "fontia-api");
+        CHECK_INT(wp_detect_app(&l, app, sizeof app), -1); CHECK_STR(app, "");
+    }
     CHECK_INT(wp_parse_rfc3339("1970-01-02T00:00:00Z"), -1); /* before 1971: treated as unknown */
     CHECK_INT(wp_parse_rfc3339("2024-09-22T10:13:20Z"), 1727000000);
     CHECK_INT(wp_parse_rfc3339("2024-09-22T10:13:20.123456789Z"), 1727000000);
