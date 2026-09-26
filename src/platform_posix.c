@@ -15,6 +15,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <poll.h>
+#include <termios.h>
 
 void wp_platform_init(void) {}
 
@@ -27,6 +29,69 @@ int wp_term_width(void) {
     if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_col > 0) return ws.ws_col;
     const char *c = getenv("COLUMNS");
     return c ? atoi(c) : 0;
+}
+
+int wp_term_height(void) {
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 && ws.ws_row > 0) return ws.ws_row;
+    const char *c = getenv("LINES");
+    return c ? atoi(c) : 0;
+}
+
+int wp_stdin_is_tty(void) {
+    return isatty(STDIN_FILENO);
+}
+
+long long wp_clock_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static struct termios saved_termios;
+static int raw_active = 0;
+
+int wp_term_raw(int enable) {
+    if (enable && !raw_active) {
+        if (tcgetattr(STDIN_FILENO, &saved_termios) != 0) return -1;
+        struct termios t = saved_termios;
+        /* No line buffering, no echo, and Ctrl+C arrives as a key (3), so we
+         * can always restore the terminal before exiting. */
+        t.c_lflag &= ~(tcflag_t)(ICANON | ECHO | ISIG);
+        t.c_cc[VMIN] = 0;
+        t.c_cc[VTIME] = 0;
+        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) != 0) return -1;
+        raw_active = 1;
+    } else if (!enable && raw_active) {
+        tcsetattr(STDIN_FILENO, TCSANOW, &saved_termios);
+        raw_active = 0;
+    }
+    return 0;
+}
+
+static int read_byte(int timeout_ms) {
+    struct pollfd p = {STDIN_FILENO, POLLIN, 0};
+    if (poll(&p, 1, timeout_ms) <= 0) return -1;
+    unsigned char c;
+    return read(STDIN_FILENO, &c, 1) == 1 ? c : -1;
+}
+
+int wp_read_key(int timeout_ms) {
+    int c = read_byte(timeout_ms);
+    if (c < 0) return WP_KEY_NONE;
+    if (c != 27) return c;
+    /* Escape sequences: ESC [ A (up), ESC [ B (down), ESC [ 5 ~ (page up)... */
+    int c1 = read_byte(30);
+    if (c1 < 0) return WP_KEY_ESC;
+    if (c1 != '[' && c1 != 'O') return WP_KEY_ESC;
+    int c2 = read_byte(30);
+    if (c2 == 'A') return WP_KEY_UP;
+    if (c2 == 'B') return WP_KEY_DOWN;
+    if (c2 == '5' || c2 == '6') {
+        read_byte(30); /* '~' */
+        return c2 == '5' ? WP_KEY_PGUP : WP_KEY_PGDN;
+    }
+    return WP_KEY_NONE;
 }
 
 const char *wp_home(void) {

@@ -43,6 +43,67 @@ int wp_stdout_is_tty(void) {
     return _isatty(_fileno(stdout)) && vt_enabled;
 }
 
+int wp_term_height(void) {
+    CONSOLE_SCREEN_BUFFER_INFO info;
+    if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))
+        return info.srWindow.Bottom - info.srWindow.Top + 1;
+    const char *c = getenv("LINES");
+    return c ? atoi(c) : 0;
+}
+
+int wp_stdin_is_tty(void) {
+    return _isatty(_fileno(stdin));
+}
+
+long long wp_clock_ms(void) {
+    return (long long)GetTickCount64();
+}
+
+static DWORD saved_in_mode;
+static int raw_active = 0;
+
+int wp_term_raw(int enable) {
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    if (enable && !raw_active) {
+        if (!GetConsoleMode(in, &saved_in_mode)) return -1;
+        /* Ctrl+C arrives as a key (3), so we can restore the console first. */
+        SetConsoleMode(in, saved_in_mode & ~(DWORD)(ENABLE_LINE_INPUT | ENABLE_ECHO_INPUT | ENABLE_PROCESSED_INPUT));
+        raw_active = 1;
+    } else if (!enable && raw_active) {
+        SetConsoleMode(in, saved_in_mode);
+        raw_active = 0;
+    }
+    return 0;
+}
+
+int wp_read_key(int timeout_ms) {
+    HANDLE in = GetStdHandle(STD_INPUT_HANDLE);
+    long long until = wp_clock_ms() + timeout_ms;
+    for (;;) {
+        long long left = until - wp_clock_ms();
+        if (left < 0) left = 0;
+        if (WaitForSingleObject(in, (DWORD)left) != WAIT_OBJECT_0) return WP_KEY_NONE;
+        INPUT_RECORD rec;
+        DWORD n = 0;
+        if (!ReadConsoleInputW(in, &rec, 1, &n) || n == 0) return WP_KEY_NONE;
+        if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown) {
+            if (left == 0) return WP_KEY_NONE;
+            continue;
+        }
+        switch (rec.Event.KeyEvent.wVirtualKeyCode) {
+            case VK_UP: return WP_KEY_UP;
+            case VK_DOWN: return WP_KEY_DOWN;
+            case VK_PRIOR: return WP_KEY_PGUP;
+            case VK_NEXT: return WP_KEY_PGDN;
+            case VK_ESCAPE: return WP_KEY_ESC;
+            default: break;
+        }
+        WCHAR ch = rec.Event.KeyEvent.uChar.UnicodeChar;
+        if (ch > 0 && ch < 128) return (int)ch;
+        if (left == 0) return WP_KEY_NONE;
+    }
+}
+
 int wp_term_width(void) {
     CONSOLE_SCREEN_BUFFER_INFO info;
     if (GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info))

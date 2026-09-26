@@ -50,6 +50,13 @@ int wp_collect(listener_list *out);
 void wp_platform_init(void);
 int wp_stdout_is_tty(void);
 int wp_term_width(void); /* columns of the terminal, 0 if unknown */
+int wp_term_height(void); /* rows of the terminal, 0 if unknown */
+int wp_stdin_is_tty(void);
+long long wp_clock_ms(void); /* monotonic milliseconds */
+/* Interactive mode: unbuffered keys without echo. wp_term_raw(0) restores. */
+int wp_term_raw(int enable);
+enum { WP_KEY_NONE = -1, WP_KEY_UP = 1000, WP_KEY_DOWN, WP_KEY_PGUP, WP_KEY_PGDN, WP_KEY_ESC };
+int wp_read_key(int timeout_ms); /* a character, a WP_KEY_* code, or WP_KEY_NONE after the timeout */
 const char *wp_home(void);
 int wp_is_alive(int pid);
 int wp_terminate(int pid, int force, char *err, size_t err_size); /* 0 when the signal was sent */
