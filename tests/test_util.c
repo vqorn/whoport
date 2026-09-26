@@ -231,6 +231,8 @@ static void test_docker(void) {
         CHECK_STR(c[0].image, "postgres:16");
         CHECK_STR(c[0].workdir, "/home/ana/code/shop");
         CHECK_STR(c[0].service, "db");
+        CHECK_STR(c[0].ip, "0.0.0.0");
+        CHECK_STR(c[0].command, "docker-entrypoint.sh postgres");
         CHECK_INT(c[0].created, 1727000000);
         CHECK_INT(c[1].port, 6379);
         CHECK_STR(c[1].name, "redis");
@@ -284,6 +286,20 @@ static void test_docker(void) {
         CHECK_INT(wp_detect_app(&l, app, sizeof app), 1); CHECK_STR(app, "MinIO");
         wp_copy(l.image, sizeof l.image, "fontia-api");
         CHECK_INT(wp_detect_app(&l, app, sizeof app), -1); CHECK_STR(app, "");
+        wp_copy(l.ccommand, sizeof l.ccommand, "uvicorn app.main:app --host 0.0.0.0 --port 8000");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Uvicorn");
+        wp_copy(l.ccommand, sizeof l.ccommand, "docker-entrypoint.sh npm run dev");
+        wp_detect_app(&l, app, sizeof app); CHECK_STR(app, "Node.js");
+    }
+    {
+        CHECK_INT(wp_is_exposed("0.0.0.0"), 1);
+        CHECK_INT(wp_is_exposed("::"), 1);
+        CHECK_INT(wp_is_exposed("192.168.1.20"), 1);
+        CHECK_INT(wp_is_exposed("127.0.0.1"), 0);
+        CHECK_INT(wp_is_exposed("::1"), 0);
+        CHECK_INT(wp_is_exposed("::ffff:127.0.0.1"), 0);
+        CHECK_INT(wp_is_exposed("fe80::1"), 0);
+        CHECK_INT(wp_is_exposed(""), 0);
     }
     CHECK_INT(wp_parse_rfc3339("1970-01-02T00:00:00Z"), -1); /* before 1971: treated as unknown */
     CHECK_INT(wp_parse_rfc3339("2024-09-22T10:13:20Z"), 1727000000);

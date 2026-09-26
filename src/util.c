@@ -120,6 +120,9 @@ static const app_rule COMMAND_RULES[] = {
     {"valkey-server", "Valkey", 0}, {"mysqld", "MySQL", 0}, {"mariadbd", "MariaDB", 0}, {"mongod", "MongoDB", 0},
     {"memcached", "Memcached", 0}, {"nginx", "nginx", 1}, {"httpd", "Apache", 1}, {"caddy", "Caddy", 1},
     {"deno", "Deno", 1}, {"bun", "Bun", 1}, {"nodemon", "Node.js", 1}, {"node", "Node.js", 1},
+    {"npm", "Node.js", 1}, {"pnpm", "Node.js", 1}, {"yarn", "Node.js", 1}, {"java", "Java", -1},
+    {"dotnet", ".NET", 1}, {"python", "Python", -1}, {"python3", "Python", -1}, {"ruby", "Ruby", -1},
+    {"php", "PHP", 1},
     {NULL, NULL, 0},
 };
 
@@ -154,6 +157,12 @@ int wp_detect_app(const listener_t *l, char *out, size_t size) {
                 wp_copy(out, size, r->name);
                 return r->http;
             }
+        /* Own images ("myapp-api"): look at what runs inside instead. */
+        for (const app_rule *r = COMMAND_RULES; r->needle; r++)
+            if (has_word(l->ccommand, r->needle)) {
+                wp_copy(out, size, r->name);
+                return r->http;
+            }
         return -1;
     }
     char hay[WP_CMD_MAX + 80];
@@ -170,8 +179,15 @@ static int is_wildcard(const char *addr) {
     return strcmp(addr, "0.0.0.0") == 0 || strcmp(addr, "::") == 0 || strcmp(addr, "*") == 0;
 }
 
+int wp_is_exposed(const char *addr) {
+    if (!addr[0] || wp_is_loopback(addr)) return 0;
+    if (!strncmp(addr, "fe80:", 5)) return 0; /* link-local */
+    return 1;
+}
+
 int wp_is_loopback(const char *addr) {
-    return strncmp(addr, "127.", 4) == 0 || strcmp(addr, "::1") == 0 || strcmp(addr, "localhost") == 0;
+    return strncmp(addr, "127.", 4) == 0 || strcmp(addr, "::1") == 0 || strcmp(addr, "localhost") == 0 ||
+           strncmp(addr, "::ffff:127.", 11) == 0;
 }
 
 static int cmp_listener(const void *a, const void *b) {
